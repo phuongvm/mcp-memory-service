@@ -4,6 +4,35 @@ All notable changes to the MCP Memory Service project will be documented in this
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.3] - 2025-08-02
+
+### 🔒 **SSL Certificate & MCP Bridge Compatibility**
+
+#### Fixed
+- **SSL Certificate Generation**: Now generates certificates with proper Subject Alternative Names (SANs) for multi-hostname/IP compatibility
+  - Auto-detects local machine IP address dynamically (no hardcoded IPs)
+  - Includes `DNS:memory.local`, `DNS:localhost`, `DNS:*.local` 
+  - Includes `IP:127.0.0.1`, `IP:::1` (IPv6), and auto-detected local IP
+  - Environment variable support: `MCP_SSL_ADDITIONAL_IPS`, `MCP_SSL_ADDITIONAL_HOSTNAMES`
+- **Node.js MCP Bridge Compatibility**: Resolved SSL handshake failures when connecting from Claude Code
+  - Added missing MCP protocol methods: `initialize`, `tools/list`, `tools/call`, `notifications/initialized`
+  - Enhanced error handling with exponential backoff retry logic (3 attempts, max 5s delay)
+  - Comprehensive request/response logging with unique request IDs
+  - Improved HTTPS client configuration with custom SSL agent
+  - Reduced timeout from 30s to 10s for faster failure detection
+  - Removed conflicting Host headers that caused SSL verification issues
+
+#### Changed
+- **Certificate Security**: CN changed from `localhost` to `memory.local` for better hostname matching
+- **HTTP Client**: Enhanced connection management with explicit port handling and connection close headers
+- **Logging**: Added detailed SSL handshake and request flow debugging
+
+#### Environment Variables
+- `MCP_SSL_ADDITIONAL_IPS`: Comma-separated list of additional IP addresses to include in certificate
+- `MCP_SSL_ADDITIONAL_HOSTNAMES`: Comma-separated list of additional hostnames to include in certificate
+
+This release resolves SSL connectivity issues that prevented Claude Code from connecting to remote MCP Memory Service instances across different networks and deployment environments.
+
 ## [3.0.0] - 2025-07-29
 
 ### 🚀 MAJOR RELEASE: Autonomous Multi-Client Memory Service
