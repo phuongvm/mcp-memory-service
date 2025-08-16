@@ -4,6 +4,72 @@ All notable changes to the MCP Memory Service project will be documented in this
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.1.0] - 2025-08-16
+
+### 🚀 **Native Cloudflare Backend Integration**
+
+This minor release introduces native Cloudflare integration as a third storage backend option alongside SQLite-vec and ChromaDB, providing global distribution, automatic scaling, and enterprise-grade infrastructure.
+
+#### Added
+- **Native Cloudflare Backend Support**: Complete implementation using Cloudflare's edge computing platform
+  - **Vectorize**: 768-dimensional vector storage with cosine similarity for semantic search
+  - **D1 Database**: SQLite-compatible database for metadata storage
+  - **Workers AI**: Embedding generation using @cf/baai/bge-base-en-v1.5 model
+  - **R2 Storage** (optional): Object storage for large content exceeding 1MB threshold
+  
+- **Implementation Files**:
+  - `src/mcp_memory_service/storage/cloudflare.py` - Complete CloudflareStorage implementation (740 lines)
+  - `scripts/migrate_to_cloudflare.py` - Migration tool for existing SQLite-vec and ChromaDB users
+  - `scripts/test_cloudflare_backend.py` - Comprehensive test suite with automated validation
+  - `scripts/setup_cloudflare_resources.py` - Automated Cloudflare resource provisioning
+  - `docs/cloudflare-setup.md` - Complete setup, configuration, and troubleshooting guide
+  - `tests/unit/test_cloudflare_storage.py` - 15 unit tests for CloudflareStorage class
+
+- **Features**:
+  - Automatic retry logic with exponential backoff for API rate limiting
+  - Connection pooling for optimal HTTP performance
+  - NDJSON format support for Vectorize v2 API endpoints
+  - LRU caching (1000 entries) for embedding deduplication
+  - Batch operations support for efficient data processing
+  - Global distribution with <100ms latency from most locations
+  - Pay-per-use pricing model with no upfront costs
+
+#### Changed
+- Updated `config.py` to include 'cloudflare' in SUPPORTED_BACKENDS
+- Enhanced server initialization in `mcp_server.py` to support Cloudflare backend
+- Updated storage factory in `storage/__init__.py` to create CloudflareStorage instances
+- Consolidated documentation, removing redundant setup files
+
+#### Technical Details
+- **Environment Variables**:
+  - `MCP_MEMORY_STORAGE_BACKEND=cloudflare` - Activate Cloudflare backend
+  - `CLOUDFLARE_API_TOKEN` - API token with Vectorize, D1, Workers AI permissions
+  - `CLOUDFLARE_ACCOUNT_ID` - Cloudflare account identifier
+  - `CLOUDFLARE_VECTORIZE_INDEX` - Name of Vectorize index (768 dimensions)
+  - `CLOUDFLARE_D1_DATABASE_ID` - D1 database UUID
+  - `CLOUDFLARE_R2_BUCKET` (optional) - R2 bucket for large content
+  
+- **Performance Characteristics**:
+  - Storage: ~200ms per memory (including embedding generation)
+  - Search: ~100ms for semantic search (5 results)
+  - Batch operations: ~50ms per memory in batches of 100
+  - Global latency: <100ms from most global locations
+
+#### Migration Path
+Users can migrate from existing backends using provided scripts:
+```bash
+# From SQLite-vec
+python scripts/migrate_to_cloudflare.py --source sqlite
+
+# From ChromaDB  
+python scripts/migrate_to_cloudflare.py --source chroma
+```
+
+#### Compatibility
+- Fully backward compatible with existing SQLite-vec and ChromaDB backends
+- No breaking changes to existing APIs or configurations
+- Supports all existing MCP operations and features
+
 ## [5.0.1] - 2025-08-15
 
 ### 🐛 **Critical Migration Fixes**

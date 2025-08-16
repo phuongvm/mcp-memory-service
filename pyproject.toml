@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-memory-service"
-version = "5.0.1"  
+version = "5.1.0"  
 description = "Universal MCP memory service with semantic search, multi-client support, and autonomous consolidation for Claude Desktop, VS Code, and 13+ AI applications"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,7 +48,8 @@ dependencies = [
     "sse-starlette>=2.1.0",
     "aiofiles>=23.2.1",
     "psutil>=5.9.0",
-    "zeroconf>=0.130.0"
+    "zeroconf>=0.130.0",
+    "httpx>=0.24.0"
 ]
 
 [project.optional-dependencies]
