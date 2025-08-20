@@ -4,6 +4,14 @@ All notable changes to the MCP Memory Service project will be documented in this
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.2.2] - 2025-08-20
+
+### 🔧 Fixed
+- **Remote Ingestion Script Path Detection**: Enhanced `scripts/remote_ingest.sh` to auto-detect mcp-memory-service repository location anywhere in user's home directory instead of hardcoded path assumptions
+  - Resolves path case sensitivity issues (Repositories vs repositories)
+  - Works regardless of where users clone the repository
+  - Validates found directory contains pyproject.toml to ensure correct repository
+
 ## [6.2.1] - 2025-08-20
 
 ### 🐛 **CRITICAL BUG FIXES: Memory Listing and Search Index**

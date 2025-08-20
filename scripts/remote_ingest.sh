@@ -7,7 +7,9 @@ set -e
 # Configuration
 REMOTE_HOST="${REMOTE_HOST:-10.0.1.30}"
 REMOTE_USER="${REMOTE_USER:-hkr}"
-REMOTE_PATH="/home/${REMOTE_USER}/Repositories/mcp-memory-service"
+# Auto-detect the mcp-memory-service repository location
+REMOTE_PATH=$(ssh ${REMOTE_USER}@${REMOTE_HOST} "find /home/${REMOTE_USER} -name 'mcp-memory-service' -type d -exec test -f {}/pyproject.toml \; -print 2>/dev/null | head -n1")
+REMOTE_PATH="${REMOTE_PATH:-/home/${REMOTE_USER}/repositories/mcp-memory-service}"
 
 # Colors for output
 RED='\033[0;31m'
