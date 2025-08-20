@@ -21,7 +21,7 @@ For users who want to get started immediately:
    - **Vectorize Edit** (for creating and managing vector indexes)
    - **D1 Edit** (for creating and managing databases)
    - **R2 Edit** (optional, for large content storage)
-   - **Workers AI Edit** (for embedding generation)
+   - **Workers AI Read** (for embedding generation)
 
 ### Quick Setup Commands
 
@@ -349,7 +349,7 @@ ERROR: Unauthorized - Invalid API token
 
 **Solution**: 
 - Verify all required environment variables are set
-- Check API token has correct permissions (Vectorize:Edit, D1:Edit, Workers AI:Edit)
+- Check API token has correct permissions (Vectorize:Edit, D1:Edit, Workers AI:Read)
 - Ensure token is not expired
 - Verify account ID is correct
 

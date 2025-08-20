@@ -22,7 +22,7 @@
 [![SQLite-vec](https://img.shields.io/badge/Storage-SQLite--vec-336791?style=flat&logo=sqlite&logoColor=white)](https://github.com/doobidoo/mcp-memory-service#storage-backends)
 [![Cloudflare](https://img.shields.io/badge/Storage-Cloudflare-f38020?style=flat&logo=cloudflare&logoColor=white)](https://github.com/doobidoo/mcp-memory-service#storage-backends)
 
-A **universal MCP memory service** providing **semantic memory search**, persistent storage, and **autonomous memory consolidation** for **AI assistants** and development environments. This **Model Context Protocol server** works with **Claude Desktop, VS Code, Cursor, Continue, WindSurf, LM Studio, Zed, and 13+ AI applications**, featuring **vector database storage** with SQLite-vec for **fast semantic search** and a revolutionary **dream-inspired consolidation system** that automatically organizes, compresses, and manages your **AI conversation history** over time, creating a **self-evolving knowledge base** for enhanced **AI productivity**.
+A **universal MCP memory service** providing **semantic memory search**, persistent storage, and **autonomous memory consolidation** for **AI assistants** and development environments. This **Model Context Protocol server** works with **Claude Desktop, VS Code, Cursor, Continue, WindSurf, LM Studio, Zed, and 13+ AI applications**, featuring **multiple storage backends** including **SQLite-vec** for **fast local search**, **Cloudflare** for **global edge distribution**, and a revolutionary **dream-inspired consolidation system** that automatically organizes, compresses, and manages your **AI conversation history** over time, creating a **self-evolving knowledge base** for enhanced **AI productivity**.
 
 <img width="240" alt="grafik" src="https://github.com/user-attachments/assets/eab1f341-ca54-445c-905e-273cd9e89555" />
 <a href="https://glama.ai/mcp/servers/bzvl3lz34o"><img width="380" height="200" src="https://glama.ai/mcp/servers/bzvl3lz34o/badge" alt="Memory Service MCP server" /></a>
@@ -37,6 +37,8 @@ A **universal MCP memory service** providing **semantic memory search**, persist
 
 ### 🚀 Getting Started
 - [⚡ Quick Start](#-quick-start)
+- [🌍 Cloudflare Backend (v6.2.0)](#cloudflare-v620---cloud-native-)
+- [🧠 Claude Code Memory Awareness (v6.0.0)](#-new-claude-code-memory-awareness-v600)
 - [🎯 Claude Code Commands (v2.2.0)](#-new-claude-code-commands-v220)
 - [🚀 Remote MCP Memory Service (v4.0.0)](#-new-remote-mcp-memory-service-v400)
 - [📦 Installation Methods](#installation-methods)
@@ -99,6 +101,76 @@ cd mcp-memory-service && python install.py
 ```
 ✅ **Perfect for**: Developers, customization, multi-client setup  
 ➡️ [Full Installation Guide](#-intelligent-installer-recommended)
+
+---
+
+## 🧠 NEW: Claude Code Memory Awareness (v6.0.0)
+
+**Revolutionary automatic memory injection for Claude Code sessions!**
+
+Transform your development experience with intelligent, automatic memory context that appears seamlessly in every Claude Code session. Never lose track of decisions, insights, or architectural choices again.
+
+### ✨ Automatic Memory Injection
+
+```bash
+# Install the memory awareness hook system
+cd claude-hooks && ./install.sh
+
+# Every Claude Code session now starts with relevant context:
+# 🧠 Relevant Memory Context
+# 
+# ## Recent Insights (Last 7 days)
+# - Database Performance Issue - Resolved SQLite-vec optimization (yesterday)
+# - Authentication Flow - Implemented JWT validation (3 days ago)
+# 
+# ## Key Decisions  
+# - Architecture Decision - Chose React over Vue (1 week ago)
+# - Database Choice - Selected PostgreSQL for production (2 weeks ago)
+```
+
+### 🎯 Features
+
+🤖 **Zero Cognitive Load**: Memory context appears automatically without user intervention  
+🧠 **Intelligent Selection**: Advanced scoring algorithm chooses only relevant memories  
+⚡ **Lightning Fast**: Memory injection adds <2 seconds to session startup  
+📊 **Multi-Language Support**: Detects JavaScript, Python, Rust, Go, Java, C++ projects  
+🏗️ **Context-Aware**: Understands your project structure, git repo, and technology stack  
+📝 **Beautiful Formatting**: Categorized, markdown-rich memory presentation  
+🔄 **Session Learning**: Automatically stores session outcomes for future reference  
+✅ **100% Test Coverage**: Comprehensive testing with complete integration validation  
+
+### 🚀 Installation
+
+```bash
+# Clone repository and install hooks
+git clone https://github.com/doobidoo/mcp-memory-service.git
+cd mcp-memory-service/claude-hooks
+./install.sh
+
+# Verify installation
+npm test  # 10 tests, all passing
+```
+
+### 🏗️ How It Works
+
+1. **Session Start**: Hook detects project context (language, framework, git info)
+2. **Memory Query**: Searches memory service for relevant memories using multi-factor scoring
+3. **Context Injection**: Formats and injects top 8 relevant memories as session context
+4. **Session End**: Analyzes conversation and stores outcomes with intelligent tagging
+
+### 📊 Memory Scoring Algorithm
+
+```javascript
+// Multi-factor relevance scoring
+const relevanceScore = (
+  timeDecayScore * 0.4 +         // Recent memories preferred
+  tagRelevanceScore * 0.3 +      // Project-specific tags
+  contentSimilarityScore * 0.2 + // Semantic matching  
+  memoryTypeBonusScore * 0.1     // Decision/insight bonus
+);
+```
+
+➡️ [**Technical Architecture**](docs/enhancement-roadmap-issue-14.md) | [**Installation Guide**](claude-hooks/README.md) | [**Test Results**](claude-hooks/tests/)
 
 ---
 
@@ -224,8 +296,16 @@ curl -X POST http://your-server:8000/mcp \
 - **Controlled forgetting** with safe archival and recovery systems
 - **Performance optimized** for processing 10k+ memories efficiently
 
+### ⚡ ONNX Runtime Support (NEW!)
+- **PyTorch-free operation** using ONNX Runtime for embeddings
+- **Reduced dependencies** (~500MB less disk space without PyTorch)
+- **Faster startup** with pre-optimized ONNX models
+- **Automatic fallback** to SentenceTransformers when needed
+- **Compatible models** with the same all-MiniLM-L6-v2 embeddings
+- Enable with: `export MCP_MEMORY_USE_ONNX=true`
+
 #### **Advanced Memory Operations**
-- **Semantic search** using sentence transformers
+- **Semantic search** using sentence transformers or ONNX embeddings
 - **Natural language time-based recall** (e.g., "last week", "yesterday morning")
 - **Enhanced tag deletion system** with flexible multi-tag support
 - **Tag-based memory retrieval** system with OR/AND logic
@@ -261,11 +341,12 @@ curl -X POST http://your-server:8000/mcp \
 ### Recent Highlights
 
 #### 🚀 Latest Features
+- **v6.2.0**: 🌍 **Native Cloudflare Backend Integration** - Global edge distribution, serverless scaling, Vectorize + D1 + R2 storage
+- **v6.1.0**: 🧠 **Intelligent Context Updates (Phase 2)** - Real-time conversation analysis with dynamic memory loading
+- **v6.0.0**: 🧠 **Claude Code Memory Awareness (Phase 1)** - Automatic memory injection for coding sessions
+- **v5.0.2**: ONNX Runtime support for PyTorch-free embeddings and SQLite-vec consolidation fixes
 - **v5.0.0**: SQLite-vec is now the default backend - 10x faster startup, 75% less memory
-- **v4.5.0**: Database synchronization for distributed memory access across multiple machines  
-- **v4.1.0**: Enhanced MCP resources, guided prompts, and progress tracking
-- **v3.0.0**: Dream-inspired autonomous memory consolidation with exponential decay
-- **v2.2.0**: Claude Code Commands for direct conversational memory operations
+- **v4.5.0**: Database synchronization for distributed memory access across multiple machines
 
 ➡️ **[View Full Changelog](CHANGELOG.md)** for complete version history and detailed release notes
 
@@ -369,24 +450,44 @@ python install.py --storage-backend chromadb      # Use legacy ChromaDB (not rec
 
 #### Docker Hub (Recommended)
 
-The easiest way to run the Memory Service is using our pre-built Docker images:
+The easiest way to run the Memory Service is using our pre-built Docker images. We provide **two variants** optimized for different use cases:
 
+##### Standard Image (Full Features)
 ```bash
-# Pull the latest image
+# Pull the standard image (includes PyTorch + CUDA support)
 docker pull doobidoo/mcp-memory-service:latest
 
 # Run with default settings (for MCP clients)
 docker run -d -p 8000:8000 \
-  -v $(pwd)/data/chroma_db:/app/chroma_db \
+  -v $(pwd)/data/sqlite_db:/app/sqlite_db \
   -v $(pwd)/data/backups:/app/backups \
   doobidoo/mcp-memory-service:latest
+```
 
+##### Slim Image (90% Smaller - Recommended for CPU-only deployments)
+```bash
+# Pull the slim image (ONNX + sqlite-vec only, ~300MB vs 3GB+)
+docker pull doobidoo/mcp-memory-service:slim
+
+# Run optimized for CPU-only performance
+docker run -d -p 8000:8000 \
+  -v $(pwd)/data/sqlite_db:/app/sqlite_db \
+  -v $(pwd)/data/backups:/app/backups \
+  doobidoo/mcp-memory-service:slim
+```
+
+**Image Comparison:**
+- **Standard**: ~3.4GB (PyTorch + CUDA libraries) - Best for GPU acceleration
+- **Slim**: ~300MB (ONNX + sqlite-vec only) - Best for CPU-only deployments, faster pulls
+
+##### Advanced Usage
+```bash
 # Run in standalone mode (for testing/development)
 docker run -d -p 8000:8000 \
   -e MCP_STANDALONE_MODE=1 \
-  -v $(pwd)/data/chroma_db:/app/chroma_db \
+  -v $(pwd)/data/sqlite_db:/app/sqlite_db \
   -v $(pwd)/data/backups:/app/backups \
-  doobidoo/mcp-memory-service:latest
+  doobidoo/mcp-memory-service:slim
 ```
 
 #### Docker Compose
@@ -690,7 +791,7 @@ The MCP Memory Service supports multiple storage backends to suit different use 
 - **Memory usage**: Minimal (~50MB for 1K memories)
 - **Setup**: Automatically configured, works offline immediately
 
-### Cloudflare (NEW - Cloud-Native) 🚀
+### Cloudflare (v6.2.0 - Cloud-Native) 🚀
 - **Best for**: Production deployments, global scale, multi-user applications
 - **Features**: Global edge network, serverless scaling, zero infrastructure management
 - **Storage**: Vectorize + D1 + R2, Workers AI embeddings
@@ -698,7 +799,7 @@ The MCP Memory Service supports multiple storage backends to suit different use 
 - **Setup**: [Cloudflare Setup Guide](docs/cloudflare-setup.md)
 
 ### ChromaDB (Legacy - Deprecated)
-⚠️ **DEPRECATED**: Will be removed in v6.0.0. Please migrate to SQLite-vec or Cloudflare.
+⚠️ **DEPRECATED**: Will be removed in v7.0.0. Please migrate to SQLite-vec or Cloudflare.
 - **Previous use cases**: Large memory collections, advanced vector metrics
 - **Issues**: Network dependencies, Hugging Face download failures, high resource usage
 - **Memory usage**: Higher (~200MB for 1K memories)

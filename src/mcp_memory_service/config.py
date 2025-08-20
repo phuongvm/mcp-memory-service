@@ -13,9 +13,21 @@
 # limitations under the License.
 
 """
-MCP Memory Service
+MCP Memory Service Configuration
+
+Environment Variables:
+- MCP_MEMORY_STORAGE_BACKEND: Storage backend ('sqlite_vec' or 'chromadb')
+- MCP_MEMORY_CHROMA_PATH: Local ChromaDB storage directory
+- MCP_MEMORY_CHROMADB_HOST: Remote ChromaDB server hostname (enables remote mode)
+- MCP_MEMORY_CHROMADB_PORT: Remote ChromaDB server port (default: 8000)
+- MCP_MEMORY_CHROMADB_SSL: Use HTTPS for remote connection ('true'/'false')
+- MCP_MEMORY_CHROMADB_API_KEY: API key for remote ChromaDB authentication
+- MCP_MEMORY_COLLECTION_NAME: ChromaDB collection name (default: 'memory_collection')
+- MCP_MEMORY_SQLITE_PATH: SQLite-vec database file path
+- MCP_MEMORY_USE_ONNX: Use ONNX embeddings ('true'/'false')
+
 Copyright (c) 2024 Heinrich Krupp
-Licensed under the MIT License. See LICENSE file in the project root for full license text.
+Licensed under the Apache License, Version 2.0
 """
 import os
 import sys
@@ -193,6 +205,14 @@ if STORAGE_BACKEND == 'sqlite_vec':
     logger.info(f"Using SQLite-vec database path: {SQLITE_VEC_PATH}")
 else:
     SQLITE_VEC_PATH = None
+
+# ONNX Configuration
+USE_ONNX = os.getenv('MCP_MEMORY_USE_ONNX', '').lower() in ('1', 'true', 'yes')
+if USE_ONNX:
+    logger.info("ONNX embeddings enabled - using PyTorch-free embedding generation")
+    # ONNX model cache directory
+    ONNX_MODEL_CACHE = os.path.join(BASE_DIR, 'onnx_models')
+    os.makedirs(ONNX_MODEL_CACHE, exist_ok=True)
 
 # Cloudflare specific configuration
 if STORAGE_BACKEND == 'cloudflare':

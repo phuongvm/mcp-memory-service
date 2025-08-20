@@ -2,6 +2,37 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Memory Context Reference (Optional)
+
+This project supports enhanced context through MCP Memory Service integration. If you have a local MCP Memory Service instance running, you can store and retrieve project context to reduce token usage in Claude Code sessions.
+
+### Setup Memory Context (Optional)
+1. **Deploy MCP Memory Service**: Follow deployment instructions for your environment
+2. **Store Reference Memories**: Use the `distributable-reference` tag for shareable context
+3. **Create Local CLAUDE_MEMORY.md**: Add your memory hashes (git-ignored)
+
+### Memory Categories for Storage
+- **Project Structure**: Server architecture, file locations, component relationships
+- **Key Commands**: Installation, testing, debugging, deployment commands
+- **Environment Variables**: Configuration options and platform-specific settings
+- **Recent Changes**: Version history, resolved issues, breaking changes
+- **Testing Practices**: Framework preferences, test patterns, validation steps
+
+### Local Memory Configuration
+Create `CLAUDE_MEMORY.md` (git-ignored) with your memory service details:
+```markdown
+# Local Memory Hashes
+- Memory Service: https://your-instance:port
+- Auth: Bearer your-api-key
+- Retrieve Command: curl -k -s -X POST https://your-instance:port/mcp -H "Authorization: Bearer your-key" -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search_by_tag", "arguments": {"tags": ["claude-code-reference"]}}}'
+```
+
+### Memory Management Guidelines
+- **Review Schedule**: Quarterly review of reference memories for accuracy
+- **Distribution**: Use `distributable-reference` tag for team sharing
+- **Export Tool**: `./scripts/export_distributable_memories.sh` for network distribution
+- **Documentation**: Keep memory hashes in local files, not in version control
+
 ## Overview
 
 MCP Memory Service is a Model Context Protocol server that provides semantic memory and persistent storage capabilities for Claude Desktop using ChromaDB and sentence transformers. The project enables long-term memory storage with semantic search across conversations.
@@ -17,8 +48,17 @@ MCP Memory Service is a Model Context Protocol server that provides semantic mem
 - **Debug with MCP Inspector**: `npx @modelcontextprotocol/inspector uv --directory /path/to/repo run memory`
 - **Check documentation links**: `python scripts/check_documentation_links.py` (validates all internal markdown links)
 - **Test Docker functionality**: `python scripts/test_docker_functionality.py` (comprehensive Docker container verification)
+- **Find and remove duplicates**: `python scripts/find_duplicates.py --execute` (removes duplicate memories from database)
+- **Clean corrupted encoding**: `python scripts/cleanup_corrupted_encoding.py --execute` (removes memories with corrupted emoji encoding)
 - **Setup git merge drivers**: `./scripts/setup-git-merge-drivers.sh` (one-time setup for new contributors)
 - **Store memory**: `/memory-store "content"` - Store information directly to MCP Memory Service at narrowbox.local:8443
+
+### Claude Code Memory Awareness (v6.0.0)
+- **Install hooks system**: `cd claude-hooks && ./install.sh` (one-command installation)
+- **Test hooks system**: `cd claude-hooks && npm test` (10 integration tests, 100% pass rate)
+- **Verify project detection**: Test project context detection across multiple languages
+- **Memory injection testing**: Validate automatic memory context injection during Claude Code sessions
+- **Session consolidation**: Verify session-end hooks capture and store conversation outcomes
 
 ### Build & Package
 - **Build package**: `python -m build`
@@ -48,6 +88,13 @@ MCP Memory Service is a Model Context Protocol server that provides semantic mem
    - Platform-specific optimizations
    - Hardware acceleration detection
 
+5. **Claude Code Hooks System** (`claude-hooks/`)
+   - `core/session-start.js`: Automatic memory injection hook
+   - `core/session-end.js`: Session consolidation and outcome storage
+   - `utilities/project-detector.js`: Multi-language project context detection
+   - `utilities/memory-scorer.js`: Advanced relevance scoring algorithms
+   - `utilities/context-formatter.js`: Memory presentation and formatting
+
 ### Key Design Patterns
 
 - **Async/Await**: All I/O operations are async
@@ -55,6 +102,8 @@ MCP Memory Service is a Model Context Protocol server that provides semantic mem
 - **Error Handling**: Specific exception types with clear messages
 - **Caching**: Global caches for models and embeddings to improve performance
 - **Platform Detection**: Automatic hardware optimization (CUDA, MPS, DirectML, ROCm)
+- **Hook-Based Architecture**: Event-driven memory awareness with session lifecycle management
+- **Multi-Factor Scoring**: Advanced algorithms for memory relevance and context selection
 
 ### MCP Protocol Operations
 
@@ -154,6 +203,64 @@ The command will:
 7. Use semantic commit messages for version management
 8. Use `/memory-store` to capture important decisions and context during development
 
+### Deployment & Debugging
+
+#### Remote Server Deployment Process
+When deploying changes to production servers (e.g., 10.0.1.30:8443):
+
+1. **Pre-deployment**: Test changes locally first
+2. **Deploy**: SSH to server, `git pull`, restart service
+3. **Verify**: Check `/api/health` for new version number
+4. **Test**: Verify web frontend loads at https://server:8443/
+
+#### Web Frontend Debugging
+Common issues and solutions for internal server errors:
+
+**Python Syntax Errors in HTML Templates**:
+- **Problem**: F-strings or `.format()` with CSS cause syntax errors
+- **Symptom**: `SyntaxError: invalid decimal literal` or `KeyError` with CSS fragments
+- **Solution**: Use string concatenation instead: `"text" + variable + "more text"`
+- **Example**: Replace `f"CSS {color: blue;}"` with `"CSS " + color_var + ": blue;"`
+
+**Cache-Related Issues**:
+- **Problem**: Code changes not taking effect despite restart
+- **Symptoms**: Old behavior persists, web frontend shows errors
+- **Solution**: Clear all Python caches:
+  ```bash
+  # Clear Python bytecode cache
+  find . -name "*.pyc" -delete
+  find . -name "__pycache__" -type d -exec rm -rf {} +
+  
+  # Clear UV cache (can be several GB)
+  uv cache clean
+  
+  # Kill all running server processes
+  pkill -f "run_server.py"
+  pkill -f "python -m src.mcp_memory_service.server"
+  
+  # Restart with fresh environment
+  ```
+
+**Environment Reset Procedure**:
+When persistent issues occur:
+1. Stop all services: `sudo systemctl stop mcp-memory-service`
+2. Clear caches (see above)
+3. Reset UV environment: `rm -rf .venv && uv sync`
+4. Restart service: `sudo systemctl start mcp-memory-service`
+5. Monitor logs: `journalctl -u mcp-memory-service -f`
+
+#### Version Mismatch Issues
+- **Problem**: Health endpoints show old version after deployment
+- **Check**: Verify `__version__` import in affected files
+- **Files to verify**: `server.py`, `web/app.py`, `web/api/health.py`
+- **Solution**: Ensure all files import `from . import __version__` or `from ... import __version__`
+
+#### Backend Method Compatibility
+- **Problem**: Web API calls methods not available in storage backend
+- **Example**: API calls `search_by_tags` but backend only has `search_by_tag`
+- **Solution**: Implement missing methods with backward compatibility
+- **Check**: Verify API endpoints match storage backend method names
+
 ### Git Configuration
 
 #### Automated uv.lock Conflict Resolution
@@ -171,6 +278,97 @@ Files involved:
 - `scripts/uv-lock-merge.sh`: Custom merge driver script
 - `scripts/setup-git-merge-drivers.sh`: One-time setup for contributors
 
+#### Feature Branch Lifecycle and Cleanup
+
+Follow this complete workflow for feature development to maintain repository cleanliness:
+
+**1. Feature Development**
+```bash
+# Create feature branch
+git checkout -b feature/your-feature-name
+
+# Develop and commit changes
+git add .
+git commit -m "feat: implement your feature"
+```
+
+**2. Integration Process**
+```bash
+# Update to latest main before integration
+git fetch origin
+git rebase origin/main
+
+# Resolve any conflicts during rebase
+# Test thoroughly after rebase
+```
+
+**3. Pull Request Workflow**
+```bash
+# Push feature branch
+git push -u origin feature/your-feature-name
+
+# Create PR via GitHub or gh CLI
+gh pr create --title "feat: your feature" --body "Description"
+
+# Address code review feedback
+# Push additional commits if needed
+```
+
+**4. Post-Merge Cleanup (Essential)**
+```bash
+# After PR is merged to main, clean up immediately:
+
+# 1. Switch back to main
+git checkout main
+git pull origin main
+
+# 2. Delete local feature branch
+git branch -d feature/your-feature-name
+
+# 3. Delete remote feature branch
+git push origin --delete feature/your-feature-name
+
+# 4. Verify cleanup complete
+git branch -a  # Should not show deleted feature branch
+```
+
+**5. Release Management**
+```bash
+# For version releases, follow semantic versioning:
+
+# Update version files
+# pyproject.toml: version = "x.y.z" 
+# src/mcp_memory_service/__init__.py: __version__ = "x.y.z"
+
+# Update CHANGELOG.md with release notes
+# Commit version changes
+git add pyproject.toml src/mcp_memory_service/__init__.py CHANGELOG.md
+git commit -m "chore: bump version to vx.y.z"
+
+# Create annotated release tag
+git tag -a vx.y.z -m "Release vx.y.z: Brief description"
+
+# Push commits and tags
+git push origin main
+git push origin vx.y.z
+
+# Create GitHub release (optional)
+gh release create vx.y.z --title "vx.y.z" --notes "Release notes"
+```
+
+**Branch Cleanup Best Practices:**
+- Always delete feature branches after successful merge
+- Never leave stale feature branches in the repository
+- Use `git branch -a` regularly to check for cleanup opportunities
+- Feature branches should be short-lived (days to weeks, not months)
+- Clean up both local and remote branches to avoid confusion
+
+This workflow ensures:
+- Clean git history without stale branches
+- Clear feature development lifecycle
+- Proper release management with semantic versioning
+- Team coordination through standardized practices
+
 ### Common Issues
 
 1. **MPS Fallback**: On macOS, if MPS fails, set `PYTORCH_ENABLE_MPS_FALLBACK=1`
@@ -178,3 +376,4 @@ Files involved:
 3. **ChromaDB Persistence**: Ensure write permissions for storage paths
 4. **Memory Usage**: Model loading is deferred until first use to reduce startup time
 5. **uv.lock Conflicts**: Should resolve automatically; if not, ensure git merge drivers are set up
+- add the fact that we can add discussion content via github graphql to memory
