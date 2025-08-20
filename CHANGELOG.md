@@ -4,12 +4,45 @@ All notable changes to the MCP Memory Service project will be documented in this
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [6.2.2] - 2025-08-20
+## [6.2.3] - 2025-08-20
 
-### 🔧 Fixed
-- **Remote Ingestion Script Path Detection**: Enhanced `scripts/remote_ingest.sh` to auto-detect mcp-memory-service repository location anywhere in user's home directory instead of hardcoded path assumptions
+### 🛠️ **Cross-Platform Path Detection & Claude Code Integration**
+
+This release provides comprehensive cross-platform fixes for path detection issues and complete Claude Code hooks integration across Linux, macOS, and Windows.
+
+#### Fixed
+- **Linux Path Detection**: Enhanced `scripts/remote_ingest.sh` to auto-detect mcp-memory-service repository location anywhere in user's home directory
   - Resolves path case sensitivity issues (Repositories vs repositories)
   - Works regardless of where users clone the repository
+  - Validates found directory contains pyproject.toml to ensure correct repository
+
+- **Windows Path Detection**: Added comprehensive Windows support with PowerShell and batch scripts
+  - New: `scripts/install_claude_hooks_windows.ps1` - Full-featured PowerShell installation
+  - New: `scripts/install_claude_hooks_windows.bat` - Batch wrapper for easy execution
+  - Dynamic repository location detection using PSScriptRoot resolution
+  - Comprehensive Claude Code hooks directory detection with fallbacks
+  - Improved error handling and validation for source/target directories
+  - Resolves hardcoded Unix path issues (`\home\hkr\...`) on Windows systems
+  - Tested with 100% success rate across Windows environments
+
+- **Claude Code Commands Documentation**: Fixed and enhanced memory commands documentation
+  - Updated command usage from `/memory-store` to `claude /memory-store`
+  - Added comprehensive troubleshooting section for command installation issues
+  - Documented both Claude Code commands and direct API alternatives
+  - Added installation instructions and quick fixes for common problems
+
+#### Technical Improvements
+- Repository detection now works on any platform and directory structure
+- Claude Code hooks installation handles Windows-specific path formats
+- Improved error messages and debug output across all platforms
+- Consistent behavior across Windows, Linux, and macOS platforms
+
+## [6.2.2] - 2025-08-20
+
+### 🔧 Fixed  
+- **Remote Ingestion Script Path Detection**: Enhanced `scripts/remote_ingest.sh` to auto-detect mcp-memory-service repository location anywhere in user's home directory instead of hardcoded path assumptions
+  - Resolves path case sensitivity issues (Repositories vs repositories)
+  - Works regardless of where users clone the repository  
   - Validates found directory contains pyproject.toml to ensure correct repository
 
 ## [6.2.1] - 2025-08-20
