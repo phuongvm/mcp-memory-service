@@ -51,7 +51,7 @@ MCP Memory Service is a Model Context Protocol server that provides semantic mem
 - **Find and remove duplicates**: `python scripts/find_duplicates.py --execute` (removes duplicate memories from database)
 - **Clean corrupted encoding**: `python scripts/cleanup_corrupted_encoding.py --execute` (removes memories with corrupted emoji encoding)
 - **Setup git merge drivers**: `./scripts/setup-git-merge-drivers.sh` (one-time setup for new contributors)
-- **Store memory**: `/memory-store "content"` - Store information directly to MCP Memory Service at narrowbox.local:8443
+- **Store memory**: `claude /memory-store "content"` - Store information via Claude Code commands (requires command installation)
 
 ### Claude Code Memory Awareness (v6.0.0)
 - **Install hooks system**: `cd claude-hooks && ./install.sh` (one-command installation)
@@ -163,34 +163,52 @@ The codebase includes platform-specific optimizations:
 
 Hardware detection is automatic via `utils/system_detection.py`.
 
-### Memory Storage Command
+### Memory Storage Commands
 
-The `/memory-store` command allows direct storage of information to the MCP Memory Service:
+#### Claude Code Commands (Recommended)
+Install Claude Code commands first: `python scripts/claude_commands_utils.py`
 
 **Basic Usage:**
 ```bash
-/memory-store "content to store"
+claude /memory-store "content to store"
+claude /memory-recall "what did we decide about databases?"
+claude /memory-search --tags "architecture,database"
+claude /memory-health  # Check service status
+claude /memory-context  # Store current session context
 ```
 
 **Advanced Usage:**
-- Automatically detects project context and adds relevant tags
-- Captures git repository information and recent commits
-- Adds client hostname via the hostname capture feature
-- Uses direct curl to `https://narrowbox.local:8443/api/memories`
-- No temporary files or confirmation prompts required
-
-**Example Patterns:**
 ```bash
-/memory-store "Fixed critical bug in hostname capture logic"
-/memory-store "Decision: Use SQLite-vec for better performance than ChromaDB"
-/memory-store "TODO: Update Docker configuration after database backend change"
+claude /memory-store --tags "decision,architecture" "Database backend choice"
+claude /memory-store --type "note" --project "my-app" "Important reminder"
 ```
 
-The command will:
-1. Analyze current working directory and git context
-2. Generate appropriate tags (project name, file types, git commits)
-3. Store directly via curl with proper JSON formatting
-4. Return content hash and applied tags for confirmation
+**Features:**
+- Automatic project context detection and smart tagging
+- Git repository information and recent commits capture
+- Client hostname tracking for multi-machine usage
+- Integrated with MCP Memory Service at `https://narrowbox.local:8443`
+- No setup required after command installation
+
+#### Direct API Usage (Alternative)
+For direct API access without Claude Code commands:
+```bash
+curl -k -s -X POST https://narrowbox.local:8443/api/memories \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer mcp-test-key" \
+  -d '{"content": "your content", "tags": ["tag1", "tag2"]}'
+```
+
+#### Command Installation
+To install Claude Code commands:
+1. Run: `python scripts/claude_commands_utils.py`
+2. Commands will be available as `claude /memory-store`, etc.
+3. Test installation: `claude /memory-health`
+
+**Troubleshooting:**
+- If commands timeout: Use direct API calls as fallback
+- If installation fails: Ensure Claude Code CLI is installed
+- For path issues: Commands auto-detect project location
 
 ### Development Tips
 
@@ -201,7 +219,7 @@ The command will:
 5. The server maintains global state for models - be careful with concurrent modifications
 6. All new features should include corresponding tests
 7. Use semantic commit messages for version management
-8. Use `/memory-store` to capture important decisions and context during development
+8. Use `claude /memory-store` to capture important decisions and context during development
 
 ### Deployment & Debugging
 
@@ -368,6 +386,83 @@ This workflow ensures:
 - Clear feature development lifecycle
 - Proper release management with semantic versioning
 - Team coordination through standardized practices
+
+### Claude Code Commands Troubleshooting
+
+#### Installation Issues
+1. **Command not found**: Ensure Claude Code CLI is installed
+   ```bash
+   # Check Claude Code installation
+   claude --version
+   
+   # Install commands if Claude CLI is available
+   python scripts/claude_commands_utils.py
+   ```
+
+2. **Commands directory not accessible**:
+   ```bash
+   # Check permissions on ~/.claude/commands
+   ls -la ~/.claude/commands
+   
+   # Create directory if missing
+   mkdir -p ~/.claude/commands
+   ```
+
+3. **Installation script fails**:
+   ```bash
+   # Run with verbose output for debugging
+   python scripts/claude_commands_utils.py --verbose
+   
+   # Check for existing backups
+   ls ~/.claude/commands/backup_*
+   ```
+
+#### Command Execution Issues
+1. **Commands timeout or hang**:
+   - Use direct API calls as fallback:
+     ```bash
+     curl -k -s -X POST https://narrowbox.local:8443/api/memories \
+       -H "Content-Type: application/json" \
+       -H "Authorization: Bearer mcp-test-key" \
+       -d '{"content": "your content", "tags": ["tag1"]}'
+     ```
+
+2. **Path detection errors** (e.g., "Path /home/user/Repositories not found"):
+   - Commands auto-detect repository location
+   - Ensure you're in a valid git repository
+   - Check that MCP Memory Service is running at `https://narrowbox.local:8443`
+
+3. **Authentication failures**:
+   - Verify MCP Memory Service is accessible: `curl -k https://narrowbox.local:8443/api/health`
+   - Check API key configuration in service
+   - Test with `claude /memory-health` command
+
+#### Service Connectivity Issues
+1. **Service not responding**:
+   ```bash
+   # Check service status
+   systemctl status mcp-memory-service  # Linux
+   ps aux | grep memory-service         # Process check
+   
+   # Test direct connectivity
+   curl -k https://narrowbox.local:8443/api/health
+   ```
+
+2. **SSL/TLS errors**:
+   - Commands use `-k` flag to accept self-signed certificates
+   - Ensure service is running on HTTPS port 8443
+   - Check firewall settings for port access
+
+3. **Wrong endpoint**:
+   - Default endpoint: `https://narrowbox.local:8443`
+   - Update commands if using different hostname/port
+   - Check MDNS resolution: `avahi-resolve-host-name narrowbox.local`
+
+#### Quick Fixes
+- **Reset command installation**: `python scripts/claude_commands_utils.py --uninstall && python scripts/claude_commands_utils.py`
+- **Test basic functionality**: `claude /memory-health`
+- **Use direct API**: Always available as fallback method
+- **Check service logs**: `journalctl -u mcp-memory-service -f`
 
 ### Common Issues
 
