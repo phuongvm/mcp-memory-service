@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "memory": {
+      "command": "mcp-proxy",
+      "args": [
+        "http://your-server:8000/mcp",
+        "--transport=streamablehttp"
+      ],
+      "env": {
+        "API_ACCESS_TOKEN": "your-secure-api-key"
+      }
+    }
+  }
+}
+

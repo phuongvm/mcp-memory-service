@@ -46,6 +46,8 @@ from .api.memories import router as memories_router
 from .api.search import router as search_router
 from .api.events import router as events_router
 from .api.mcp import router as mcp_router
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from .mcp_streamable import build_mcp_server
 from .sse import sse_manager
 
 logger = logging.getLogger(__name__)
@@ -153,8 +155,32 @@ def create_app() -> FastAPI:
     app.include_router(search_router, prefix="/api", tags=["search"])
     app.include_router(events_router, prefix="/api", tags=["events"])
     
-    # Include MCP protocol router
+    # Include MCP protocol router (legacy JSON endpoint moved under /mcp/legacy)
     app.include_router(mcp_router, tags=["mcp-protocol"])
+
+    # Mount Streamable HTTP MCP endpoint at /mcp using MCP Python SDK
+    try:
+        http_session_manager = None
+
+        async def mcp_streamable(scope, receive, send):  # ASGI app
+            nonlocal http_session_manager
+            if http_session_manager is None:
+                # Initialize lazily once storage is ready
+                mcp_app = build_mcp_server(get_storage())
+                http_session_manager = StreamableHTTPSessionManager(
+                    app=mcp_app,
+                    event_store=None,
+                    json_response=True,
+                    stateless=False,
+                )
+                logger.info("Initialized Streamable HTTP MCP session manager")
+            await http_session_manager.handle_request(scope, receive, send)
+
+        # Mount as ASGI app under /mcp
+        app.mount("/mcp", mcp_streamable)
+        logger.info("Mounted Streamable HTTP MCP endpoint at /mcp")
+    except Exception as e:
+        logger.error(f"Failed to mount Streamable HTTP MCP endpoint: {e}")
     
     # Serve static files (dashboard)
     static_path = os.path.join(os.path.dirname(__file__), "static")
