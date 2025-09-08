@@ -25,6 +25,7 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
+    bash \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy essential files
@@ -51,6 +52,11 @@ COPY scripts/utils/memory_wrapper_uv.py ./memory_wrapper_uv.py
 COPY tools/docker/docker-entrypoint.sh /usr/local/bin/
 COPY tools/docker/docker-entrypoint-persistent.sh /usr/local/bin/
 COPY tools/docker/docker-entrypoint-unified.sh /usr/local/bin/
+
+# Normalize line endings for entrypoint scripts (handle CRLF -> LF)
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && \
+    sed -i 's/\r$//' /usr/local/bin/docker-entrypoint-persistent.sh && \
+    sed -i 's/\r$//' /usr/local/bin/docker-entrypoint-unified.sh
 
 # Install minimal dependencies (CPU-only, no PyTorch)
 RUN python -m uv pip install \

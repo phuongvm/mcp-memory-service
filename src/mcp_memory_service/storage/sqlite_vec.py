@@ -146,8 +146,10 @@ class SqliteVecMemoryStorage(MemoryStorage):
             if not SQLITE_VEC_AVAILABLE:
                 raise ImportError("sqlite-vec is not available. Install with: pip install sqlite-vec")
             
-            if not SENTENCE_TRANSFORMERS_AVAILABLE:
-                raise ImportError("sentence-transformers is not available. Install with: pip install sentence-transformers torch")
+            # Do not hard-require sentence-transformers here.
+            # ONNX-only deployments (MCP_MEMORY_USE_ONNX=1) should initialize successfully
+            # without torch/sentence-transformers. Fallback checks happen in
+            # _initialize_embedding_model().
             
             # Connect to database
             self.conn = sqlite3.connect(self.db_path)
