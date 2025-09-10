@@ -23,6 +23,8 @@ import logging
 import traceback
 import time
 import os
+import sys
+import platform
 from typing import List, Dict, Any, Tuple, Optional, Set, Callable
 from datetime import datetime
 import asyncio
@@ -140,6 +142,29 @@ class SqliteVecMemoryStorage(MemoryStorage):
         # If we get here, all retries failed
         raise last_exception
     
+    def _check_extension_support(self):
+        """Check if Python's sqlite3 supports loading extensions."""
+        test_conn = None
+        try:
+            test_conn = sqlite3.connect(":memory:")
+            if not hasattr(test_conn, 'enable_load_extension'):
+                return False, "Python sqlite3 module not compiled with extension support"
+            
+            # Test if we can actually enable extension loading
+            test_conn.enable_load_extension(True)
+            test_conn.enable_load_extension(False)
+            return True, "Extension loading supported"
+            
+        except AttributeError as e:
+            return False, f"enable_load_extension not available: {e}"
+        except sqlite3.OperationalError as e:
+            return False, f"Extension loading disabled: {e}"
+        except Exception as e:
+            return False, f"Extension support check failed: {e}"
+        finally:
+            if test_conn:
+                test_conn.close()
+
     async def initialize(self):
         """Initialize the SQLite database with vec0 extension."""
         try:
@@ -151,13 +176,98 @@ class SqliteVecMemoryStorage(MemoryStorage):
             # without torch/sentence-transformers. Fallback checks happen in
             # _initialize_embedding_model().
             
+            # Check if extension loading is supported
+            extension_supported, support_message = self._check_extension_support()
+            if not extension_supported:
+                error_msg = f"SQLite extension loading not supported: {support_message}"
+                logger.error(error_msg)
+                
+                # Provide detailed error message with solutions
+                platform_info = f"{platform.system()} {platform.release()}"
+                solutions = []
+                
+                if platform.system().lower() == "darwin":  # macOS
+                    solutions.extend([
+                        "Install Python via Homebrew: brew install python",
+                        "Use pyenv with extension support: PYTHON_CONFIGURE_OPTS='--enable-loadable-sqlite-extensions' pyenv install 3.12.0",
+                        "Switch to ChromaDB backend: export MCP_MEMORY_STORAGE_BACKEND=chromadb"
+                    ])
+                elif platform.system().lower() == "linux":
+                    solutions.extend([
+                        "Install Python with extension support: apt install python3-dev sqlite3",
+                        "Rebuild Python with: ./configure --enable-loadable-sqlite-extensions",
+                        "Switch to ChromaDB backend: export MCP_MEMORY_STORAGE_BACKEND=chromadb"
+                    ])
+                else:  # Windows and others
+                    solutions.extend([
+                        "Use official Python installer from python.org",
+                        "Install Python with conda: conda install python",
+                        "Switch to ChromaDB backend: export MCP_MEMORY_STORAGE_BACKEND=chromadb"
+                    ])
+                
+                detailed_error = f"""
+{error_msg}
+
+Platform: {platform_info}
+Python Version: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}
+
+SOLUTIONS:
+{chr(10).join(f"  • {solution}" for solution in solutions)}
+
+The sqlite-vec backend requires Python compiled with --enable-loadable-sqlite-extensions.
+Consider using the ChromaDB backend as an alternative: it provides the same functionality
+without requiring SQLite extensions.
+
+To switch backends permanently, set: MCP_MEMORY_STORAGE_BACKEND=chromadb
+"""
+                raise RuntimeError(detailed_error.strip())
+            
             # Connect to database
             self.conn = sqlite3.connect(self.db_path)
-            self.conn.enable_load_extension(True)
             
-            # Load sqlite-vec extension
-            sqlite_vec.load(self.conn)
-            self.conn.enable_load_extension(False)
+            # Load sqlite-vec extension with proper error handling
+            try:
+                self.conn.enable_load_extension(True)
+                sqlite_vec.load(self.conn)
+                self.conn.enable_load_extension(False)
+                logger.info("sqlite-vec extension loaded successfully")
+            except Exception as e:
+                error_msg = f"Failed to load sqlite-vec extension: {e}"
+                logger.error(error_msg)
+                if self.conn:
+                    self.conn.close()
+                    self.conn = None
+                
+                # Provide specific guidance based on the error
+                if "enable_load_extension" in str(e):
+                    detailed_error = f"""
+{error_msg}
+
+This error occurs when Python's sqlite3 module is not compiled with extension support.
+This is common on macOS with the system Python installation.
+
+RECOMMENDED SOLUTIONS:
+  • Use Homebrew Python: brew install python && rehash
+  • Use pyenv with extensions: PYTHON_CONFIGURE_OPTS='--enable-loadable-sqlite-extensions' pyenv install 3.12.0
+  • Switch to ChromaDB backend: export MCP_MEMORY_STORAGE_BACKEND=chromadb
+
+The ChromaDB backend provides the same vector search functionality without requiring SQLite extensions.
+"""
+                else:
+                    detailed_error = f"""
+{error_msg}
+
+Failed to load the sqlite-vec extension. This could be due to:
+  • Incompatible sqlite-vec version
+  • Missing system dependencies
+  • SQLite version incompatibility
+
+SOLUTIONS:
+  • Reinstall sqlite-vec: pip install --force-reinstall sqlite-vec
+  • Switch to ChromaDB backend: export MCP_MEMORY_STORAGE_BACKEND=chromadb
+  • Check SQLite version: python -c "import sqlite3; print(sqlite3.sqlite_version)"
+"""
+                raise RuntimeError(detailed_error.strip())
             
             # Apply default pragmas for concurrent access
             default_pragmas = {

@@ -4,6 +4,64 @@ All notable changes to the MCP Memory Service project will be documented in this
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.13.3] - 2025-09-03
+
+### 🐛 **Critical Bug Fixes**
+
+#### macOS SQLite Extension Support (Fixes Issue #97)
+- **Fixed AttributeError**: Resolved `'sqlite3.Connection' object has no attribute 'enable_load_extension'` error on macOS
+  - Added comprehensive extension support detection before attempting to load sqlite-vec
+  - Graceful error handling with clear, actionable error messages
+  - Platform-specific guidance for macOS users (Homebrew Python, pyenv with extension support)
+  - Interactive prompt to switch to ChromaDB backend when extensions unavailable
+- **Enhanced sqlite_vec.py**: Added `_check_extension_support()` method with robust error handling
+- **Improved install.py**: Added SQLite extension support detection and warnings during installation
+
+### 📚 **Documentation Updates**
+
+#### macOS Extension Loading Documentation
+- **README Updates**: Added dedicated macOS SQLite extension support section with solutions
+- **First-Time Setup Guide**: Comprehensive macOS extension issues section with verification commands
+- **Troubleshooting Guide**: Detailed troubleshooting for `enable_load_extension` AttributeError
+- **Clear Solutions**: Step-by-step instructions for Homebrew Python and pyenv with extension support
+
+### 🔧 **Installation Improvements**
+- **Proactive Detection**: Installer now checks SQLite extension support before attempting sqlite-vec installation
+- **Interactive Fallback**: Option to automatically switch to ChromaDB when sqlite-vec cannot work
+- **Better Error Messages**: Platform-specific solutions instead of cryptic errors
+- **System Information**: Enhanced system info display includes SQLite extension support status
+
+### 🏥 **Error Handling**
+- **Runtime Protection**: sqlite-vec backend now fails gracefully with helpful error messages
+- **Clear Guidance**: Detailed error messages explain why the error occurs and provide multiple solutions
+- **Automatic Detection**: System automatically detects extension support capabilities
+
+## [6.13.2] - 2025-09-03
+
+### 🐛 **Bug Fixes**
+
+#### Python 3.13 Compatibility (Fixes Issue #96)
+- **Enhanced sqlite-vec Installation**: Added intelligent fallback strategies for Python 3.13 where pre-built wheels are not yet available
+  - Automatic retry with multiple installation methods (uv pip, standard pip, source build, GitHub install)
+  - Clear guidance for alternative solutions (Python 3.12, ChromaDB backend)
+  - Interactive prompt to switch backends if sqlite-vec installation fails
+- **Improved Error Messages**: Better error reporting with actionable manual installation options
+- **uv Package Manager Support**: Prioritizes uv pip when available for better dependency resolution
+
+### 📚 **Documentation Updates**
+
+#### Python 3.13 Support Documentation
+- **README Updates**: Added Python 3.13 compatibility note with recommended solutions
+- **First-Time Setup Guide**: New section on Python 3.13 known issues and workarounds
+- **Troubleshooting Guide**: Comprehensive sqlite-vec installation troubleshooting for Python 3.13
+- **Clear Migration Path**: Step-by-step instructions for using Python 3.12 or switching to ChromaDB
+
+### 🔧 **Installation Improvements**
+- **Multi-Strategy Installation**: Installer now tries 5 different methods before failing
+- **Source Build Fallback**: Attempts to build from source when wheels are unavailable
+- **GitHub Direct Install**: Falls back to installing directly from sqlite-vec repository
+- **Backend Switching**: Option to automatically switch to ChromaDB if sqlite-vec fails
+
 ## [6.13.1] - 2025-09-03
 
 ### 📚 **Documentation & User Experience**

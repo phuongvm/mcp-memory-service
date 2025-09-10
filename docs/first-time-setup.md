@@ -74,6 +74,101 @@ After the first successful run:
 - Model loads from cache (5-10 seconds)
 - Service starts much faster (10-15 seconds total)
 
+## 🐍 Python 3.13 Compatibility
+
+### Known Issues
+Python 3.13 users may encounter installation issues with **sqlite-vec** due to missing pre-built wheels. The installer now includes automatic fallback methods:
+
+1. **Automatic Retry Logic**: Tries multiple installation strategies
+2. **Source Building**: Attempts to build from source if wheels unavailable
+3. **GitHub Installation**: Falls back to installing directly from repository
+4. **Backend Switching**: Option to switch to ChromaDB if sqlite-vec fails
+
+### Recommended Solutions
+If you encounter sqlite-vec installation failures on Python 3.13:
+
+**Option 1: Use Python 3.12 (Recommended)**
+```bash
+# macOS
+brew install python@3.12
+python3.12 -m venv .venv
+source .venv/bin/activate
+python install.py
+
+# Ubuntu/Linux
+sudo apt install python3.12 python3.12-venv
+python3.12 -m venv .venv
+source .venv/bin/activate
+python install.py
+```
+
+**Option 2: Use ChromaDB Backend**
+```bash
+python install.py --storage-backend chromadb
+```
+
+**Option 3: Manual sqlite-vec Installation**
+```bash
+# Try building from source
+pip install --no-binary :all: sqlite-vec
+
+# Or install from GitHub
+pip install git+https://github.com/asg017/sqlite-vec.git#subdirectory=python
+```
+
+## 🍎 macOS SQLite Extension Issues
+
+### Problem: `AttributeError: 'sqlite3.Connection' object has no attribute 'enable_load_extension'`
+
+This error occurs on **macOS with system Python** because it's not compiled with SQLite extension support.
+
+**Why this happens:**
+- macOS system Python lacks `--enable-loadable-sqlite-extensions`
+- The bundled SQLite library doesn't support loadable extensions
+- This is a security-focused default configuration
+
+**Solutions:**
+
+**Option 1: Homebrew Python (Recommended)**
+```bash
+# Install Python via Homebrew (includes extension support)
+brew install python
+hash -r  # Refresh command cache
+python3 --version  # Verify you're using Homebrew Python
+
+# Then install MCP Memory Service
+python3 install.py
+```
+
+**Option 2: pyenv with Extension Support**
+```bash
+# Install pyenv if not already installed
+brew install pyenv
+
+# Install Python with extension support
+PYTHON_CONFIGURE_OPTS="--enable-loadable-sqlite-extensions" pyenv install 3.12.0
+pyenv local 3.12.0
+
+# Verify extension support
+python3 -c "import sqlite3; conn=sqlite3.connect(':memory:'); conn.enable_load_extension(True); print('Extensions supported!')"
+```
+
+**Option 3: Use ChromaDB Backend**
+```bash
+# ChromaDB doesn't require SQLite extensions
+python3 install.py --storage-backend chromadb
+```
+
+### Verification
+Check if your Python supports extensions:
+```bash
+python3 -c "
+import sqlite3
+conn = sqlite3.connect(':memory:')
+print('✅ Extension support available' if hasattr(conn, 'enable_load_extension') else '❌ No extension support')
+"
+```
+
 ## 🐧 Ubuntu/Linux Specific Notes
 
 For Ubuntu 24 and other Linux distributions:
