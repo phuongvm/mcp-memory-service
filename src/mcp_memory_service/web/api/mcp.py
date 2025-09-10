@@ -17,7 +17,7 @@ from ...utils.hashing import generate_content_hash
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/mcp-info", tags=["mcp"])
+router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 
 class MCPRequest(BaseModel):
@@ -104,7 +104,8 @@ MCP_TOOLS = [
 ]
 
 
-@router.post("/legacy")
+@router.post("/")
+@router.post("")
 async def mcp_endpoint(request: MCPRequest):
     """Main MCP protocol endpoint for processing MCP requests."""
     try:

@@ -171,10 +171,8 @@ class SqliteVecMemoryStorage(MemoryStorage):
             if not SQLITE_VEC_AVAILABLE:
                 raise ImportError("sqlite-vec is not available. Install with: pip install sqlite-vec")
             
-            # Do not hard-require sentence-transformers here.
-            # ONNX-only deployments (MCP_MEMORY_USE_ONNX=1) should initialize successfully
-            # without torch/sentence-transformers. Fallback checks happen in
-            # _initialize_embedding_model().
+            if not SENTENCE_TRANSFORMERS_AVAILABLE:
+                raise ImportError("sentence-transformers is not available. Install with: pip install sentence-transformers torch")
             
             # Check if extension loading is supported
             extension_supported, support_message = self._check_extension_support()
@@ -312,22 +310,10 @@ SOLUTIONS:
                     created_at REAL,
                     updated_at REAL,
                     created_at_iso TEXT,
-                    updated_at_iso TEXT,
-                    -- legacy compatibility column; not used by runtime
-                    content_embedding BLOB
+                    updated_at_iso TEXT
                 )
             ''')
 
-            # Back-compat: some legacy tests expect a content_embedding column
-            # Even though embeddings are stored in a separate vec table, add the column if missing
-            try:
-                cols = [r[1] for r in self.conn.execute('PRAGMA table_info(memories)').fetchall()]
-                if 'content_embedding' not in cols:
-                    self.conn.execute('ALTER TABLE memories ADD COLUMN content_embedding BLOB')
-                    logger.info("Added legacy column content_embedding to memories for compatibility")
-            except sqlite3.Error as e:
-                logger.warning(f"Could not add legacy content_embedding column: {e}")
-            
             # Initialize embedding model BEFORE creating vector table
             await self._initialize_embedding_model()
             
@@ -1403,20 +1389,15 @@ SOLUTIONS:
         try:
             content_hash, content, tags_str, memory_type, metadata_str, created_at, updated_at, created_at_iso, updated_at_iso = row
             
-            # Parse tags (support both JSON array and comma-separated string)
+            # Parse tags
             tags = []
             if tags_str:
-                # First try JSON array
-                parsed = None
                 try:
-                    parsed = json.loads(tags_str)
-                except Exception:
-                    parsed = None
-                if isinstance(parsed, list):
-                    tags = [str(t).strip() for t in parsed if str(t).strip()]
-                else:
-                    # Fallback: treat as comma-separated list
-                    tags = [tag.strip() for tag in tags_str.split(',') if tag.strip()]
+                    tags = json.loads(tags_str)
+                    if not isinstance(tags, list):
+                        tags = []
+                except json.JSONDecodeError:
+                    tags = []
             
             # Parse metadata
             metadata = {}
