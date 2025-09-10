@@ -1,4 +1,7 @@
-# Docker Compose configuration for HTTP/API mode (default)
+# Docker Compose configuration for MCP protocol mode
+# For use with MCP clients (Claude Desktop, VS Code extension, etc.)
+# For HTTP/API mode, use docker-compose.yml instead
+
 services:
   mcp-memory-service:
     build:
@@ -6,43 +9,35 @@ services:
       dockerfile: tools/docker/Dockerfile
     env_file:
       - ./.env
-    ports:
-      - "${HTTP_PORT:-8000}:8000"  # Host port can be changed via HTTP_PORT
+
+    # Required for MCP protocol communication
+    stdin_open: true
+    tty: true
+
     volumes:
       # Single data directory for all storage
       - ./data:/app/data
-      - ./data/backups:/app/backups
-      - ./data/sqlite_db:/app/sqlite_db
 
     environment:
       # Mode selection
       - MCP_MODE=${MCP_MODE:-mcp}
+      - MCP_API_KEY=${MCP_API_KEY}
 
       # Storage configuration
       - MCP_MEMORY_STORAGE_BACKEND=${MCP_MEMORY_STORAGE_BACKEND}
       - MCP_MEMORY_SQLITE_PATH=${MCP_MEMORY_SQLITE_PATH}
       - MCP_MEMORY_BACKUPS_PATH=${MCP_MEMORY_BACKUPS_PATH}
-
-      # Prefer ONNX embeddings in HTTP mode to avoid torch/HF downloads
+      # Use ONNX embeddings to avoid torch/HF downloads in MCP mode
       - MCP_MEMORY_USE_ONNX=${MCP_MEMORY_USE_ONNX}
 
-      # HTTP configuration
-      - MCP_HTTP_PORT=${MCP_HTTP_PORT:-8000}
-      - MCP_HTTP_HOST=${MCP_HTTP_HOST}
-      - MCP_API_KEY=${MCP_API_KEY:-your-secure-api-key-here}
-      - MCP_CORS_ORIGINS=${MCP_CORS_ORIGINS:-*}
-      - MCP_SSE_HEARTBEAT=${MCP_SSE_HEARTBEAT:-30}
-
-      # Optional: HTTPS configuration
-      # - MCP_HTTPS_ENABLED=true
-      # - MCP_HTTPS_PORT=8443
-      # - MCP_SSL_CERT_FILE=/app/certs/cert.pem
-      # - MCP_SSL_KEY_FILE=/app/certs/key.pem
-
       # Performance tuning
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_LEVEL=${LOG_LEVEL}
       - MAX_RESULTS_PER_QUERY=${MAX_RESULTS_PER_QUERY}
       - SIMILARITY_THRESHOLD=${SIMILARITY_THRESHOLD}
+      # Network/service discovery & CORS
+      - MCP_MDNS_ENABLED=${MCP_MDNS_ENABLED}
+      - MCP_CORS_ORIGINS=${MCP_CORS_ORIGINS}
+      - MCP_SSE_HEARTBEAT=${MCP_SSE_HEARTBEAT}
 
       # Python configuration
       - PYTHONUNBUFFERED=1
@@ -54,7 +49,7 @@ services:
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test: ["CMD", "sh", "-c", "ps aux | grep -v grep | grep -q 'mcp_memory_service.server'"]
       interval: 30s
       timeout: 10s
       retries: 3

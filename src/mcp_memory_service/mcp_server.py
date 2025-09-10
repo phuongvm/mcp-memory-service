@@ -49,8 +49,8 @@ def get_storage_backend():
     
     if backend == "sqlite-vec" or backend == "sqlite_vec":
         try:
-            from .storage.sqlite_vec import SqliteVecStorage
-            return SqliteVecStorage
+            from .storage.sqlite_vec import SqliteVecMemoryStorage
+            return SqliteVecMemoryStorage
         except ImportError as e:
             logger.error(f"Failed to import SQLite-vec storage: {e}")
             raise
@@ -61,8 +61,8 @@ def get_storage_backend():
         except ImportError:
             logger.warning("ChromaDB not available, falling back to SQLite-vec")
             try:
-                from .storage.sqlite_vec import SqliteVecStorage
-                return SqliteVecStorage
+                from .storage.sqlite_vec import SqliteVecMemoryStorage
+                return SqliteVecMemoryStorage
             except ImportError as e:
                 logger.error(f"Failed to import fallback SQLite-vec storage: {e}")
                 raise
@@ -76,8 +76,8 @@ def get_storage_backend():
     else:
         logger.warning(f"Unknown storage backend '{backend}', defaulting to SQLite-vec")
         try:
-            from .storage.sqlite_vec import SqliteVecStorage
-            return SqliteVecStorage
+            from .storage.sqlite_vec import SqliteVecMemoryStorage
+            return SqliteVecMemoryStorage
         except ImportError as e:
             logger.error(f"Failed to import default SQLite-vec storage: {e}")
             raise
@@ -100,10 +100,11 @@ async def mcp_server_lifespan(server: FastMCP) -> AsyncIterator[MCPServerContext
     # Initialize storage backend based on configuration and availability
     StorageClass = get_storage_backend()
     
-    if StorageClass.__name__ == "SqliteVecStorage":
+    if StorageClass.__name__ in ("SqliteVecMemoryStorage", "SqliteVecStorage"):
+        from .config import SQLITE_VEC_PATH
         storage = StorageClass(
-            db_path=CHROMA_PATH / "memory.db",
-            embedding_manager=None  # Will be set after creation
+            db_path=SQLITE_VEC_PATH,
+            embedding_model=None  # use default from config
         )
     elif StorageClass.__name__ == "CloudflareStorage":
         storage = StorageClass(
@@ -134,7 +135,13 @@ async def mcp_server_lifespan(server: FastMCP) -> AsyncIterator[MCPServerContext
         # Cleanup on shutdown
         logger.info("Shutting down MCP Memory Service components...")
         if hasattr(storage, 'close'):
-            await storage.close()
+            try:
+                result = storage.close()
+                import asyncio as _asyncio
+                if _asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                pass
 
 # Create FastMCP server instance
 mcp = FastMCP(

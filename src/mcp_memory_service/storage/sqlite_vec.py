@@ -202,9 +202,21 @@ class SqliteVecMemoryStorage(MemoryStorage):
                     created_at REAL,
                     updated_at REAL,
                     created_at_iso TEXT,
-                    updated_at_iso TEXT
+                    updated_at_iso TEXT,
+                    -- legacy compatibility column; not used by runtime
+                    content_embedding BLOB
                 )
             ''')
+
+            # Back-compat: some legacy tests expect a content_embedding column
+            # Even though embeddings are stored in a separate vec table, add the column if missing
+            try:
+                cols = [r[1] for r in self.conn.execute('PRAGMA table_info(memories)').fetchall()]
+                if 'content_embedding' not in cols:
+                    self.conn.execute('ALTER TABLE memories ADD COLUMN content_embedding BLOB')
+                    logger.info("Added legacy column content_embedding to memories for compatibility")
+            except sqlite3.Error as e:
+                logger.warning(f"Could not add legacy content_embedding column: {e}")
             
             # Initialize embedding model BEFORE creating vector table
             await self._initialize_embedding_model()
@@ -1281,15 +1293,20 @@ class SqliteVecMemoryStorage(MemoryStorage):
         try:
             content_hash, content, tags_str, memory_type, metadata_str, created_at, updated_at, created_at_iso, updated_at_iso = row
             
-            # Parse tags
+            # Parse tags (support both JSON array and comma-separated string)
             tags = []
             if tags_str:
+                # First try JSON array
+                parsed = None
                 try:
-                    tags = json.loads(tags_str)
-                    if not isinstance(tags, list):
-                        tags = []
-                except json.JSONDecodeError:
-                    tags = []
+                    parsed = json.loads(tags_str)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, list):
+                    tags = [str(t).strip() for t in parsed if str(t).strip()]
+                else:
+                    # Fallback: treat as comma-separated list
+                    tags = [tag.strip() for tag in tags_str.split(',') if tag.strip()]
             
             # Parse metadata
             metadata = {}

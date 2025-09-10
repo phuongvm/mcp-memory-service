@@ -4,14 +4,14 @@
 
 Choose your mode:
 
-### MCP Protocol Mode (for Claude Desktop, VS Code)
+### HTTP API Mode (default)
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
-### HTTP API Mode (for REST API, Web Dashboard)
+### MCP Protocol Mode (stdio)
 ```bash
-docker-compose -f docker-compose.http.yml up -d
+docker compose -f docker-compose.mcp.yml up -d
 ```
 
 ## 📝 What's New (v5.0.4)
@@ -51,6 +51,15 @@ Run the test script to verify both modes work:
 ```bash
 ./test-docker-modes.sh
 ```
+
+## 📚 Related Documentation
+
+- HTTP/SSE API overview: docs/IMPLEMENTATION_PLAN_HTTP_SSE.md
+- SQLite-vec backend guide: docs/sqlite-vec-backend.md
+- Remote configuration and environment: docs/remote-configuration-wiki-section.md
+- Architecture and components: docs/architecture.md
+
+These docs explain how the HTTP endpoints, SSE, and SQLite-vec storage work, and how to configure the service via environment variables (used by this Docker setup via .env).
 
 ## 📊 HTTP Mode Endpoints
 
