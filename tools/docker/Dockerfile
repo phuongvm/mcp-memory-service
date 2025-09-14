@@ -1,6 +1,6 @@
 ## Slim (CPU-only) Docker image optimized for sqlite-vec + ONNX
 ## Consolidated as the primary Dockerfile to avoid confusion.
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 # Build arguments for conditional features
 ARG SKIP_MODEL_DOWNLOAD=false
@@ -20,12 +20,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Minimal system packages
+# Minimal system packages with security updates
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
     bash \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 # Copy essentials
 COPY pyproject.toml .
