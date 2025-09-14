@@ -303,14 +303,11 @@ async def find_similar(
     start_time = time.time()
     
     try:
-        # First, get the target memory by searching with its hash
-        # This is inefficient but works with current storage interface
-        target_results = await storage.retrieve(content_hash, n_results=1)
+        # First, get the target memory by its hash
+        target_memory = await storage.get_by_hash(content_hash)
         
-        if not target_results or target_results[0].memory.content_hash != content_hash:
+        if not target_memory:
             raise HTTPException(status_code=404, detail="Memory not found")
-        
-        target_memory = target_results[0].memory
         
         # Use the target memory's content to find similar memories
         similar_results = await storage.retrieve(

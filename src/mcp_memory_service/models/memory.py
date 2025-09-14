@@ -15,7 +15,7 @@
 """Memory-related data models."""
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 import logging
 
@@ -75,13 +75,17 @@ class Memory:
                 try:
                     # Handle common ISO formats
                     if iso_str.endswith('Z'):
+                        # Remove 'Z' and parse as UTC
                         dt = datetime.fromisoformat(iso_str[:-1])
+                        # Treat as UTC by replacing timezone
+                        return dt.replace(tzinfo=timezone.utc).timestamp()
                     elif '+' in iso_str or iso_str.count('-') > 2:
                         # Has timezone info, use fromisoformat in Python 3.7+
                         dt = datetime.fromisoformat(iso_str)
+                        return dt.timestamp()
                     else:
                         dt = datetime.fromisoformat(iso_str)
-                    return dt.timestamp()
+                        return dt.timestamp()
                 except:
                     # Last resort: try strptime
                     dt = datetime.strptime(iso_str[:19], "%Y-%m-%dT%H:%M:%S")
@@ -89,7 +93,7 @@ class Memory:
 
         def float_to_iso(ts: float) -> str:
             """Convert float timestamp to ISO string."""
-            return datetime.utcfromtimestamp(ts).isoformat() + "Z"
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
         # Handle created_at
         if created_at is not None and created_at_iso is not None:
@@ -148,13 +152,13 @@ class Memory:
             self.updated_at_iso = float_to_iso(now)
         
         # Update legacy timestamp field for backward compatibility
-        self.timestamp = datetime.utcfromtimestamp(self.created_at)
+        self.timestamp = datetime.fromtimestamp(self.created_at, tz=timezone.utc)
 
     def touch(self):
         """Update the updated_at timestamps to the current time."""
         now = time.time()
         self.updated_at = now
-        self.updated_at_iso = datetime.utcfromtimestamp(now).isoformat() + "Z"
+        self.updated_at_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert memory to dictionary format for storage."""
