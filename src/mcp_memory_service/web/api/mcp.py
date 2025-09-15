@@ -79,7 +79,13 @@ MCP_TOOLS = [
         inputSchema={
             "type": "object", 
             "properties": {
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags to search for"},
+                "tags": {
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "string"}
+                    ],
+                    "description": "Tags to search for (array of strings or comma-separated string)"
+                },
                 "operation": {"type": "string", "enum": ["AND", "OR"], "description": "Tag search operation", "default": "AND"}
             },
             "required": ["tags"]
@@ -165,7 +171,7 @@ async def mcp_endpoint(request: MCPRequest):
                     }
                 }
             )
-
+        
         elif request.method == "tools/list":
             return MCPResponse(
                 id=request.id,
@@ -178,28 +184,51 @@ async def mcp_endpoint(request: MCPRequest):
             tool_name = request.params.get("name") if request.params else None
             arguments = request.params.get("arguments", {}) if request.params else {}
             
-            result = await handle_tool_call(storage, tool_name, arguments)
+            # Log detailed request information for debugging
+            logger.info(f"Tool call: {tool_name} with arguments: {arguments}")
             
-            return MCPResponse(
-                id=request.id,
-                result={
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": str(result)
-                        }
-                    ]
-                }
-            )
+            try:
+                result = await handle_tool_call(storage, tool_name, arguments)
+                logger.debug(f"Tool call {tool_name} completed successfully: {result}")
+                
+                return MCPResponse(
+                    id=request.id,
+                    result={
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": str(result)
+                            }
+                        ]
+                    }
+                )
+            except Exception as tool_error:
+                logger.error(f"Tool call {tool_name} failed with arguments {arguments}: {str(tool_error)}")
+                logger.error(f"Tool error traceback: {tool_error}", exc_info=True)
+                return MCPResponse(
+                    id=request.id,
+                    error={
+                        "code": -32603,
+                        "message": f"Tool execution failed: {str(tool_error)}"
+                    }
+                )
         
         else:
-            return MCPResponse(
-                id=request.id,
-                error={
-                    "code": -32601,
-                    "message": f"Method not found: {request.method}"
-                }
-            )
+            # Handle unknown methods
+            if request.id is None:
+                # Notification - return HTTP 202 Accepted as per MCP spec
+                from fastapi import status
+                from fastapi.responses import Response
+                return Response(status_code=status.HTTP_202_ACCEPTED)
+            else:
+                # Request - return error response
+                return MCPResponse(
+                    id=request.id,
+                    error={
+                        "code": -32601,
+                        "message": f"Method not found: {request.method}"
+                    }
+                )
             
     except Exception as e:
         logger.error(f"MCP endpoint error: {e}")
@@ -216,7 +245,7 @@ async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -
     """Handle MCP tool calls and route to appropriate memory operations."""
     
     if tool_name == "store_memory":
-        from mcp_memory_service.models.memory import Memory
+        from ...models.memory import Memory
         
         content = arguments.get("content")
         tags = arguments.get("tags", [])
@@ -289,6 +318,42 @@ async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -
         tags = arguments.get("tags")
         operation = arguments.get("operation", "AND")
         
+        # Validate and normalize tags parameter
+        if not tags:
+            logger.error(f"search_by_tag: missing required parameter 'tags'. Arguments: {arguments}")
+            raise ValueError("Missing required parameter 'tags'")
+        
+        # Handle string input - convert to array
+        if isinstance(tags, str):
+            logger.info(f"search_by_tag: converting string tags to array: '{tags}'")
+            # Handle different string formats
+            if tags.startswith('[') and tags.endswith(']'):
+                # Handle "['docker', 'testing']" format
+                try:
+                    import ast
+                    tags = ast.literal_eval(tags)
+                    if not isinstance(tags, list):
+                        tags = [str(tags)]
+                except:
+                    # Fallback: treat as comma-separated
+                    tags = [tag.strip().strip("'\"") for tag in tags.strip('[]').split(',') if tag.strip()]
+            else:
+                # Handle comma-separated format
+                tags = [tag.strip() for tag in tags.split(',') if tag.strip()]
+        
+        if not isinstance(tags, list):
+            logger.error(f"search_by_tag: 'tags' parameter must be an array or string, got {type(tags).__name__}: {tags}. Arguments: {arguments}")
+            raise ValueError(f"Parameter 'tags' must be an array or string, got {type(tags).__name__}")
+        
+        # Ensure all tags are strings
+        tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+        
+        if not tags:
+            logger.error(f"search_by_tag: no valid tags found after processing. Arguments: {arguments}")
+            raise ValueError("No valid tags provided")
+        
+        logger.debug(f"search_by_tag: validated and normalized tags={tags}, operation={operation}")
+        
         results = await storage.search_by_tags(tags=tags, operation=operation)
         
         return {
@@ -315,7 +380,14 @@ async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -
         }
     
     elif tool_name == "check_database_health":
-        stats = storage.get_stats()
+        # Check if get_stats is async or sync
+        import asyncio
+        import inspect
+        
+        if inspect.iscoroutinefunction(storage.get_stats):
+            stats = await storage.get_stats()
+        else:
+            stats = storage.get_stats()
         
         return {
             "status": "healthy",
@@ -481,7 +553,15 @@ async def list_mcp_tools():
 async def mcp_health():
     """MCP-specific health check."""
     storage = get_storage()
-    stats = storage.get_stats()
+    
+    # Check if get_stats is async or sync
+    import asyncio
+    import inspect
+    
+    if inspect.iscoroutinefunction(storage.get_stats):
+        stats = await storage.get_stats()
+    else:
+        stats = storage.get_stats()
     
     return {
         "status": "healthy",

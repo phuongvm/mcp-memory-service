@@ -54,6 +54,7 @@ set MCP_HTTP_PORT=8000
 set MCP_HTTPS_ENABLED=false
 set MCP_MDNS_ENABLED=true
 set MCP_MDNS_SERVICE_NAME=MCP-Memory-Service-Debug
+set MCP_MEMORY_USE_ONNX=true
 
 REM Fix Transformers cache warning
 set HF_HOME=%USERPROFILE%\.cache\huggingface
@@ -64,6 +65,7 @@ set MCP_API_KEY=debug-api-key-12345
 
 REM Optional: Enable debug logging
 set MCP_DEBUG=true
+set LOG_LEVEL=DEBUG
 
 echo Configuration:
 echo   Storage Backend: %MCP_MEMORY_STORAGE_BACKEND%
@@ -71,8 +73,10 @@ echo   HTTP Port: %MCP_HTTP_PORT%
 echo   HTTPS Enabled: %MCP_HTTPS_ENABLED%
 echo   mDNS Enabled: %MCP_MDNS_ENABLED%
 echo   Service Name: %MCP_MDNS_SERVICE_NAME%
+echo   ONNX Embeddings: %MCP_MEMORY_USE_ONNX%
 echo   API Key Set: Yes
 echo   Debug Mode: %MCP_DEBUG%
+echo   Log Level: %LOG_LEVEL%
 echo.
 
 echo Starting MCP Memory Service...

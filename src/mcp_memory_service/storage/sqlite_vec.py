@@ -748,30 +748,57 @@ SOLUTIONS:
             if not tags:
                 return []
             
-            # Build query based on operation
-            if operation.upper() == "AND":
-                # All tags must be present (each tag must appear in the tags field)
-                tag_conditions = " AND ".join(["tags LIKE ?" for _ in tags])
-            else:  # OR operation (default for backward compatibility)
-                tag_conditions = " OR ".join(["tags LIKE ?" for _ in tags])
-            
-            tag_params = [f"%{tag}%" for tag in tags]
-            
-            cursor = self.conn.execute(f'''
+            # Get all memories first, then filter by tags in Python for accurate JSON parsing
+            cursor = self.conn.execute('''
                 SELECT content_hash, content, tags, memory_type, metadata,
                        created_at, updated_at, created_at_iso, updated_at_iso
                 FROM memories 
-                WHERE {tag_conditions}
                 ORDER BY updated_at DESC
-            ''', tag_params)
+            ''')
             
             results = []
             for row in cursor.fetchall():
                 try:
                     content_hash, content, tags_str, memory_type, metadata_str, created_at, updated_at, created_at_iso, updated_at_iso = row
                     
-                    # Parse tags and metadata
-                    memory_tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()] if tags_str else []
+                    # Parse tags - handle multiple formats found in database (same logic as _row_to_memory)
+                    memory_tags = []
+                    if tags_str:
+                        try:
+                            # Try JSON array first (proper format)
+                            memory_tags = json.loads(tags_str)
+                            if not isinstance(memory_tags, list):
+                                memory_tags = []
+                        except json.JSONDecodeError:
+                            # Check for malformed array string representation like "[,",t,e,s,t,",]"
+                            if tags_str.startswith('[') and tags_str.endswith(']'):
+                                # Extract tags from malformed array string like '[,",t,e,s,t,",]'
+                                import re
+                                tag_matches = re.findall(r'"([^"]+)"', tags_str)
+                                if tag_matches:
+                                    # Clean up matches by removing commas and reconstructing tags
+                                    memory_tags = [match.replace(',', '').strip() for match in tag_matches if match.replace(',', '').strip()]
+                                else:
+                                    # Fallback: treat as empty
+                                    memory_tags = []
+                            else:
+                                # Standard comma-separated format
+                                memory_tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()]
+                    
+                    # Filter by tags based on operation
+                    memory_tags_set = set(memory_tags)
+                    search_tags_set = set(tags)
+                    
+                    if operation.upper() == "AND":
+                        # All search tags must be present in memory tags
+                        if not search_tags_set.issubset(memory_tags_set):
+                            continue
+                    else:  # OR operation
+                        # At least one search tag must be present in memory tags
+                        if not search_tags_set.intersection(memory_tags_set):
+                            continue
+                    
+                    # Parse metadata
                     metadata = json.loads(metadata_str) if metadata_str else {}
                     
                     memory = Memory(
@@ -1410,15 +1437,29 @@ SOLUTIONS:
         try:
             content_hash, content, tags_str, memory_type, metadata_str, created_at, updated_at, created_at_iso, updated_at_iso = row
             
-            # Parse tags
+            # Parse tags - handle multiple formats found in database
             tags = []
             if tags_str:
                 try:
+                    # Try JSON array first (proper format)
                     tags = json.loads(tags_str)
                     if not isinstance(tags, list):
                         tags = []
                 except json.JSONDecodeError:
-                    tags = []
+                    # Check for malformed array string representation like "[,",t,e,s,t,",]"
+                    if tags_str.startswith('[') and tags_str.endswith(']'):
+                        # Extract tags from malformed array string like '[,",t,e,s,t,",]'
+                        import re
+                        tag_matches = re.findall(r'"([^"]+)"', tags_str)
+                        if tag_matches:
+                            # Clean up matches by removing commas and reconstructing tags
+                            tags = [match.replace(',', '').strip() for match in tag_matches if match.replace(',', '').strip()]
+                        else:
+                            # Fallback: treat as empty
+                            tags = []
+                    else:
+                        # Standard comma-separated format
+                        tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()]
             
             # Parse metadata
             metadata = {}
