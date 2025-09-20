@@ -110,54 +110,27 @@ async def store_memory(
     The system automatically generates a unique hash for the content.
     """
     try:
-        # Generate content hash
-        content_hash = generate_content_hash(request.content)
+        from ...services.memory_service import MemoryService
         
-        # Prepare tags and metadata with optional hostname
-        final_tags = request.tags or []
-        final_metadata = request.metadata or {}
-        
-        if INCLUDE_HOSTNAME:
-            # Prioritize client-provided hostname, then header, then fallback to server
-            hostname = None
-            
-            # 1. Check if client provided hostname in request body
-            if request.client_hostname:
-                hostname = request.client_hostname
-                
-            # 2. Check for X-Client-Hostname header
-            elif http_request.headers.get('X-Client-Hostname'):
-                hostname = http_request.headers.get('X-Client-Hostname')
-                
-            # 3. Fallback to server hostname (original behavior)
-            else:
-                hostname = socket.gethostname()
-            
-            source_tag = f"source:{hostname}"
-            if source_tag not in final_tags:
-                final_tags.append(source_tag)
-            final_metadata["hostname"] = hostname
-        
-        # Create memory object
-        memory = Memory(
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.store_memory(
             content=request.content,
-            content_hash=content_hash,
-            tags=final_tags,
+            tags=request.tags,
             memory_type=request.memory_type,
-            metadata=final_metadata
+            metadata=request.metadata,
+            client_hostname=request.client_hostname,
+            http_request_headers=dict(http_request.headers)
         )
         
-        # Store the memory
-        success, message = await storage.store(memory)
-        
-        if success:
+        if result["success"]:
             # Broadcast SSE event for successful memory storage
             try:
                 memory_data = {
-                    "content_hash": content_hash,
-                    "content": memory.content,
-                    "tags": memory.tags,
-                    "memory_type": memory.memory_type
+                    "content_hash": result["content_hash"],
+                    "content": result["memory"].content,
+                    "tags": result["memory"].tags,
+                    "memory_type": result["memory"].memory_type
                 }
                 event = create_memory_stored_event(memory_data)
                 await sse_manager.broadcast_event(event)
@@ -167,15 +140,15 @@ async def store_memory(
             
             return MemoryCreateResponse(
                 success=True,
-                message=message,
-                content_hash=content_hash,
-                memory=memory_to_response(memory)
+                message=result["message"],
+                content_hash=result["content_hash"],
+                memory=memory_to_response(result["memory"])
             )
         else:
             return MemoryCreateResponse(
                 success=False,
-                message=message,
-                content_hash=content_hash
+                message=result["message"],
+                content_hash=result["content_hash"]
             )
             
     except Exception as e:
@@ -197,46 +170,23 @@ async def list_memories(
     Results are paginated for better performance.
     """
     try:
-        # Calculate offset for pagination
-        offset = (page - 1) * page_size
+        from ...services.memory_service import MemoryService
         
-        if tag:
-            # Filter by tag - get all matching memories then paginate
-            all_tag_memories = await storage.search_by_tag([tag])
-            
-            # Apply memory_type filter if specified
-            if memory_type:
-                all_tag_memories = [m for m in all_tag_memories if m.memory_type == memory_type]
-            
-            # Calculate pagination for tag results
-            total = len(all_tag_memories)
-            page_memories = all_tag_memories[offset:offset + page_size]
-            has_more = offset + page_size < total
-        else:
-            # Get total count for accurate pagination
-            total = await storage.count_all_memories()
-            
-            # Get page of memories using proper pagination
-            all_memories = await storage.get_all_memories(limit=page_size, offset=offset)
-            
-            # Apply memory_type filter if specified
-            if memory_type:
-                all_memories = [m for m in all_memories if m.memory_type == memory_type]
-                # If filtering by memory_type, we need to adjust total count
-                # This is less efficient but necessary for accurate pagination with filters
-                if memory_type:
-                    all_type_memories = await storage.get_all_memories()
-                    total = len([m for m in all_type_memories if m.memory_type == memory_type])
-            
-            page_memories = all_memories
-            has_more = offset + len(page_memories) < total
-        
-        return MemoryListResponse(
-            memories=[memory_to_response(m) for m in page_memories],
-            total=total,
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.list_memories(
             page=page,
             page_size=page_size,
-            has_more=has_more
+            tag=tag,
+            memory_type=memory_type
+        )
+        
+        return MemoryListResponse(
+            memories=[memory_to_response(m) for m in result["memories"]],
+            total=result["total"],
+            page=result["page"],
+            page_size=result["page_size"],
+            has_more=result["has_more"]
         )
         
     except Exception as e:
@@ -279,20 +229,24 @@ async def delete_memory(
     Permanently removes a memory entry from the storage.
     """
     try:
-        success, message = await storage.delete(content_hash)
+        from ...services.memory_service import MemoryService
+        
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.delete_memory(content_hash)
         
         # Broadcast SSE event for memory deletion
         try:
-            event = create_memory_deleted_event(content_hash, success)
+            event = create_memory_deleted_event(content_hash, result["success"])
             await sse_manager.broadcast_event(event)
         except Exception as e:
             # Don't fail the request if SSE broadcasting fails
             logger.warning(f"Failed to broadcast memory_deleted event: {e}")
         
         return MemoryDeleteResponse(
-            success=success,
-            message=message,
-            content_hash=content_hash
+            success=result["success"],
+            message=result["message"],
+            content_hash=result["content_hash"]
         )
         
     except Exception as e:

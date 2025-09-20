@@ -245,7 +245,7 @@ async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -
     """Handle MCP tool calls and route to appropriate memory operations."""
     
     if tool_name == "store_memory":
-        from ...models.memory import Memory
+        from ...services.memory_service import MemoryService
         
         content = arguments.get("content")
         tags = arguments.get("tags", [])
@@ -263,67 +263,67 @@ async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -
         elif not isinstance(metadata, dict):
             metadata = {}
         
-        # Add client_hostname to metadata if provided
-        if client_hostname:
-            metadata["client_hostname"] = client_hostname
-        
-        content_hash = generate_content_hash(content, metadata)
-        
-        memory = Memory(
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.store_memory(
             content=content,
-            content_hash=content_hash,
             tags=tags,
             memory_type=memory_type,
-            metadata=metadata
+            metadata=metadata,
+            client_hostname=client_hostname
         )
         
-        success, message = await storage.store(memory)
-        
         return {
-            "success": success,
-            "message": message,
-            "content_hash": memory.content_hash if success else None
+            "success": result["success"],
+            "message": result["message"],
+            "content_hash": result["content_hash"]
         }
     
     elif tool_name == "retrieve_memory":
+        from ...services.memory_service import MemoryService
+        
         query = arguments.get("query")
         limit = arguments.get("limit", 10)
         similarity_threshold = arguments.get("similarity_threshold", 0.7)
         
-        # Get results from storage (no similarity filtering at storage level)
-        results = await storage.retrieve(query=query, n_results=limit)
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.retrieve_memory(
+            query=query,
+            n_results=limit,
+            similarity_threshold=similarity_threshold
+        )
         
-        # Apply similarity threshold filtering (same as API implementation)
-        if similarity_threshold is not None:
-            results = [
-                result for result in results
-                if result.relevance_score and result.relevance_score >= similarity_threshold
-            ]
+        # Convert service result to MCP API format
+        results = []
+        for item in result["results"]:
+            results.append({
+                "content": item["memory"]["content"],
+                "content_hash": item["memory"]["content_hash"],
+                "tags": item["memory"]["tags"],
+                "similarity_score": item["similarity_score"],
+                "created_at": item["memory"]["created_at"]
+            })
         
         return {
-            "results": [
-                {
-                    "content": r.memory.content,
-                    "content_hash": r.memory.content_hash,
-                    "tags": r.memory.tags,
-                    "similarity_score": r.relevance_score,
-                    "created_at": r.memory.created_at_iso
-                }
-                for r in results
-            ],
-            "total_found": len(results)
+            "results": results,
+            "total_found": result["total_found"]
         }
     
     elif tool_name == "search_by_tag":
         tags = arguments.get("tags")
         operation = arguments.get("operation", "AND")
         
+        # Use shared service for consistent logic
+        from ...services.memory_service import MemoryService
+        memory_service = MemoryService(storage)
+        
         # Validate and normalize tags parameter
         if not tags:
             logger.error(f"search_by_tag: missing required parameter 'tags'. Arguments: {arguments}")
             raise ValueError("Missing required parameter 'tags'")
         
-        # Handle string input - convert to array
+        # Handle string input - convert to array (preserve existing logic for compatibility)
         if isinstance(tags, str):
             logger.info(f"search_by_tag: converting string tags to array: '{tags}'")
             # Handle different string formats
@@ -354,185 +354,147 @@ async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -
         
         logger.debug(f"search_by_tag: validated and normalized tags={tags}, operation={operation}")
         
-        results = await storage.search_by_tags(tags=tags, operation=operation)
+        # Convert operation to match_all boolean (AND=True, OR=False)
+        match_all = (operation == "AND")
         
+        # Use service method for consistent logic
+        result = await memory_service.search_by_tag(
+            tags=tags,
+            match_all=match_all
+        )
+        
+        # Check for errors from service
+        if "error" in result:
+            raise ValueError(result["error"])
+        
+        # Convert service result to MCP API format
         return {
             "results": [
                 {
-                    "content": memory.content,
-                    "content_hash": memory.content_hash,
-                    "tags": memory.tags,
-                    "created_at": memory.created_at_iso
+                    "content": item["memory"]["content"],
+                    "content_hash": item["memory"]["content_hash"],
+                    "tags": item["memory"]["tags"],
+                    "created_at": item["memory"]["created_at"]
                 }
-                for memory in results
+                for item in result["results"]
             ],
-            "total_found": len(results)
+            "total_found": result["total_found"]
         }
     
     elif tool_name == "delete_memory":
+        from ...services.memory_service import MemoryService
+        
         content_hash = arguments.get("content_hash")
         
-        success, message = await storage.delete(content_hash)
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.delete_memory(content_hash)
         
         return {
-            "success": success,
-            "message": message
+            "success": result["success"],
+            "message": result["message"]
         }
     
     elif tool_name == "check_database_health":
-        # Check if get_stats is async or sync
-        import asyncio
-        import inspect
+        from ...services.memory_service import MemoryService
         
-        if inspect.iscoroutinefunction(storage.get_stats):
-            stats = await storage.get_stats()
-        else:
-            stats = storage.get_stats()
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.check_database_health()
         
-        return {
-            "status": "healthy",
-            "statistics": stats
-        }
+        return result
     
     elif tool_name == "list_memories":
+        from ...services.memory_service import MemoryService
+        
         page = arguments.get("page", 1)
         page_size = arguments.get("page_size", 10)
         tag = arguments.get("tag")
         memory_type = arguments.get("memory_type")
         
-        # Calculate offset
-        offset = (page - 1) * page_size
-        
-        # Get memories with pagination
-        memories = await storage.get_all_memories(
-            limit=page_size,
-            offset=offset
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.list_memories(
+            page=page,
+            page_size=page_size,
+            tag=tag,
+            memory_type=memory_type
         )
         
-        # Apply tag and memory_type filtering if specified
-        if tag or memory_type:
-            filtered_memories = []
-            for memory in memories:
-                if tag and tag not in memory.tags:
-                    continue
-                if memory_type and memory.memory_type != memory_type:
-                    continue
-                filtered_memories.append(memory)
-            memories = filtered_memories
-        
-        return {
-            "memories": [
-                {
-                    "content": memory.content,
-                    "content_hash": memory.content_hash,
-                    "tags": memory.tags,
-                    "memory_type": memory.memory_type,
-                    "metadata": memory.metadata,
-                    "created_at": memory.created_at_iso,
-                    "updated_at": memory.updated_at_iso
-                }
-                for memory in memories
-            ],
-            "page": page,
-            "page_size": page_size,
-            "total_found": len(memories)
-        }
+        # Format for MCP response
+        return memory_service.format_mcp_response(result)
     
     elif tool_name == "search_by_time":
+        from ...services.memory_service import MemoryService
+        
         query = arguments.get("query")
         n_results = arguments.get("n_results", 10)
         
-        # Use the same time parsing logic as the API
-        from datetime import datetime
-        from .search import parse_time_query, is_within_time_range
-        try:
-            time_filter = parse_time_query(query)
-            
-            if not time_filter:
-                return {
-                    "success": False,
-                    "message": f"Could not parse time query: '{query}'. Try 'yesterday', 'last week', 'this month', etc."
-                }
-            
-            # Get memories and filter by time (same as API implementation)
-            query_results = await storage.retrieve("", n_results=1000)  # Get many results to filter
-            
-            # Filter by time (exactly like API - convert float to datetime)
-            filtered_memories = []
-            for result in query_results:
-                memory_time = None
-                if result.memory.created_at:
-                    memory_time = datetime.fromtimestamp(result.memory.created_at)
-                
-                if memory_time and is_within_time_range(memory_time, time_filter):
-                    filtered_memories.append(result)
-            
-            # Limit results
-            results = filtered_memories[:n_results]
-            
-        except Exception as e:
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.search_by_time(
+            query=query,
+            n_results=n_results
+        )
+        
+        # Check for errors from service
+        if "error" in result:
             return {
                 "success": False,
-                "message": f"Time search failed: {str(e)}"
+                "message": result["error"]
             }
         
+        # Convert service result to MCP API format
         return {
             "results": [
                 {
-                    "content": result.memory.content,
-                    "content_hash": result.memory.content_hash,
-                    "tags": result.memory.tags,
-                    "memory_type": result.memory.memory_type,
-                    "created_at": result.memory.created_at_iso,
-                    "updated_at": result.memory.updated_at_iso
+                    "content": item["memory"]["content"],
+                    "content_hash": item["memory"]["content_hash"],
+                    "tags": item["memory"]["tags"],
+                    "memory_type": item["memory"]["memory_type"],
+                    "created_at": item["memory"]["created_at_iso"],
+                    "updated_at": item["memory"]["updated_at_iso"]
                 }
-                for result in results
+                for item in result["results"]
             ],
-            "total_found": len(results)
+            "total_found": result["total_found"]
         }
     
     elif tool_name == "search_similar":
+        from ...services.memory_service import MemoryService
+        
         content_hash = arguments.get("content_hash")
         limit = arguments.get("limit", 5)
         
-        # Get the target memory first
-        target_memory = await storage.get_by_hash(content_hash)
-        if not target_memory:
-            return {
-                "success": False,
-                "message": "Memory not found"
-            }
-        
-        # Find similar memories using the target memory's content
-        similar_results = await storage.retrieve(
-            query=target_memory.content,
-            n_results=limit + 1  # +1 because the original will be included
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.search_similar(
+            content_hash=content_hash,
+            limit=limit
         )
         
-        # Filter out the original memory
-        results = [
-            r for r in similar_results 
-            if r.memory.content_hash != content_hash
-        ][:limit]
+        # Check for service-level errors
+        if not result.get("success", True):
+            return {
+                "success": False,
+                "message": result.get("message", "Unknown error occurred")
+            }
         
+        # Convert service result to MCP API format
         return {
             "success": True,
-            "target_memory": {
-                "content": target_memory.content,
-                "content_hash": target_memory.content_hash,
-                "tags": target_memory.tags
-            },
+            "target_memory": result["target_memory"],
             "similar_memories": [
                 {
-                    "content": r.memory.content,
-                    "content_hash": r.memory.content_hash,
-                    "tags": r.memory.tags,
-                    "similarity_score": r.relevance_score,
-                    "created_at": r.memory.created_at_iso
+                    "content": item["memory"]["content"],
+                    "content_hash": item["memory"]["content_hash"],
+                    "tags": item["memory"]["tags"],
+                    "similarity_score": item["similarity_score"],
+                    "created_at": item["memory"]["created_at_iso"]
                 }
-                for r in results
+                for item in result["results"]
             ],
-            "total_found": len(results)
+            "total_found": result["total_found"]
         }
     
     else:

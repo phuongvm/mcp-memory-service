@@ -101,38 +101,47 @@ async def semantic_search(
     Uses vector embeddings to find memories with similar meaning to the query,
     even if they don't share exact keywords.
     """
-    import time
-    start_time = time.time()
-    
     try:
-        # Perform semantic search using the storage layer
-        query_results = await storage.retrieve(
+        from ...services.memory_service import MemoryService
+        
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.retrieve_memory(
             query=request.query,
-            n_results=request.n_results
+            n_results=request.n_results,
+            similarity_threshold=request.similarity_threshold
         )
         
-        # Filter by similarity threshold if specified
-        if request.similarity_threshold is not None:
-            query_results = [
-                result for result in query_results
-                if result.relevance_score and result.relevance_score >= request.similarity_threshold
-            ]
-        
-        # Convert to search results
-        search_results = [
-            memory_query_result_to_search_result(result)
-            for result in query_results
-        ]
-        
-        processing_time = (time.time() - start_time) * 1000
+        # Convert service result to API response format
+        search_results = []
+        for item in result["results"]:
+            # Convert memory response to MemoryResponse format
+            memory_response = MemoryResponse(
+                content=item["memory"]["content"],
+                content_hash=item["memory"]["content_hash"],
+                tags=item["memory"]["tags"],
+                memory_type=item["memory"]["memory_type"],
+                created_at=item["memory"]["created_at"],
+                created_at_iso=None,  # Not provided by service
+                updated_at=None,      # Not provided by service
+                updated_at_iso=None,  # Not provided by service
+                metadata=item["memory"]["metadata"]
+            )
+            
+            search_result = SearchResult(
+                memory=memory_response,
+                similarity_score=item["similarity_score"],
+                relevance_reason=item["relevance_reason"]
+            )
+            search_results.append(search_result)
         
         # Broadcast SSE event for search completion
         try:
             event = create_search_completed_event(
-                query=request.query,
-                search_type="semantic",
-                results_count=len(search_results),
-                processing_time_ms=processing_time
+                query=result["query"],
+                search_type=result["search_type"],
+                results_count=result["total_found"],
+                processing_time_ms=result["processing_time_ms"]
             )
             await sse_manager.broadcast_event(event)
         except Exception as e:
@@ -140,10 +149,10 @@ async def semantic_search(
         
         return SearchResponse(
             results=search_results,
-            total_found=len(search_results),
-            query=request.query,
-            search_type="semantic",
-            processing_time_ms=processing_time
+            total_found=result["total_found"],
+            query=result["query"],
+            search_type=result["search_type"],
+            processing_time_ms=result["processing_time_ms"]
         )
         
     except Exception as e:
@@ -161,45 +170,50 @@ async def tag_search(
     Finds memories that contain any of the specified tags (OR search) or
     all of the specified tags (AND search) based on the match_all parameter.
     """
-    import time
-    start_time = time.time()
-    
     try:
-        if not request.tags:
-            raise HTTPException(status_code=400, detail="At least one tag must be specified")
+        from ...services.memory_service import MemoryService
         
-        # Use the storage layer's tag search
-        memories = await storage.search_by_tag(request.tags)
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.search_by_tag(
+            tags=request.tags,
+            match_all=request.match_all
+        )
         
-        # If match_all is True, filter to only memories that have ALL tags
-        if request.match_all and len(request.tags) > 1:
-            tag_set = set(request.tags)
-            memories = [
-                memory for memory in memories
-                if tag_set.issubset(set(memory.tags))
-            ]
+        # Check for errors from service
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
         
-        # Convert to search results
-        match_type = "ALL" if request.match_all else "ANY"
-        search_results = [
-            memory_to_search_result(
-                memory,
-                reason=f"Tags match ({match_type}): {', '.join(set(memory.tags) & set(request.tags))}"
+        # Convert service result to API response format
+        search_results = []
+        for item in result["results"]:
+            # Convert memory response to MemoryResponse format
+            memory_response = MemoryResponse(
+                content=item["memory"]["content"],
+                content_hash=item["memory"]["content_hash"],
+                tags=item["memory"]["tags"],
+                memory_type=item["memory"]["memory_type"],
+                created_at=item["memory"]["created_at"],
+                created_at_iso=None,  # Not provided by service
+                updated_at=None,      # Not provided by service
+                updated_at_iso=None,  # Not provided by service
+                metadata=item["memory"]["metadata"]
             )
-            for memory in memories
-        ]
-        
-        processing_time = (time.time() - start_time) * 1000
-        
-        query_string = f"Tags: {', '.join(request.tags)} ({match_type})"
+            
+            search_result = SearchResult(
+                memory=memory_response,
+                similarity_score=item["similarity_score"],
+                relevance_reason=item["relevance_reason"]
+            )
+            search_results.append(search_result)
         
         # Broadcast SSE event for search completion
         try:
             event = create_search_completed_event(
-                query=query_string,
-                search_type="tag",
-                results_count=len(search_results),
-                processing_time_ms=processing_time
+                query=result["query"],
+                search_type=result["search_type"],
+                results_count=result["total_found"],
+                processing_time_ms=result["processing_time_ms"]
             )
             await sse_manager.broadcast_event(event)
         except Exception as e:
@@ -207,10 +221,10 @@ async def tag_search(
         
         return SearchResponse(
             results=search_results,
-            total_found=len(search_results),
-            query=query_string,
-            search_type="tag",
-            processing_time_ms=processing_time
+            total_found=result["total_found"],
+            query=result["query"],
+            search_type=result["search_type"],
+            processing_time_ms=result["processing_time_ms"]
         )
         
     except HTTPException:
@@ -228,57 +242,51 @@ async def time_search(
     Search memories by time-based queries.
     
     Supports natural language time expressions like 'yesterday', 'last week',
-    'this month', etc. Currently implements basic time filtering - full natural
-    language parsing can be enhanced later.
+    'this month', etc. Uses shared MemoryService for consistent logic.
     """
-    import time
-    start_time = time.time()
-    
     try:
-        # Parse time query (basic implementation)
-        time_filter = parse_time_query(request.query)
+        from ...services.memory_service import MemoryService
         
-        if not time_filter:
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.search_by_time(
+            query=request.query,
+            n_results=request.n_results
+        )
+        
+        # Check for errors from service
+        if "error" in result:
             raise HTTPException(
-                status_code=400, 
-                detail=f"Could not parse time query: '{request.query}'. Try 'yesterday', 'last week', 'this month', etc."
+                status_code=400,
+                detail=result["error"]
             )
         
-        # For now, we'll do a broad search and then filter by time
-        # TODO: Implement proper time-based search in storage layer
-        query_results = await storage.retrieve("", n_results=1000)  # Get many results to filter
-        
-        # Filter by time
-        filtered_memories = []
-        for result in query_results:
-            memory_time = None
-            if result.memory.created_at:
-                memory_time = datetime.fromtimestamp(result.memory.created_at)
-            
-            if memory_time and is_within_time_range(memory_time, time_filter):
-                filtered_memories.append(result)
-        
-        # Limit results
-        filtered_memories = filtered_memories[:request.n_results]
-        
-        # Convert to search results
-        search_results = [
-            memory_query_result_to_search_result(result)
-            for result in filtered_memories
-        ]
-        
-        # Update relevance reason for time-based results
-        for result in search_results:
-            result.relevance_reason = f"Time match: {request.query}"
-        
-        processing_time = (time.time() - start_time) * 1000
+        # Convert service result to API response format
+        search_results = []
+        for item in result["results"]:
+            search_result = SearchResult(
+                memory=MemoryResponse(
+                    content=item["memory"]["content"],
+                    content_hash=item["memory"]["content_hash"],
+                    tags=item["memory"]["tags"],
+                    memory_type=item["memory"]["memory_type"],
+                    created_at=item["memory"]["created_at"],
+                    created_at_iso=item["memory"]["created_at_iso"],
+                    updated_at=item["memory"]["updated_at"],
+                    updated_at_iso=item["memory"]["updated_at_iso"],
+                    metadata=item["memory"]["metadata"]
+                ),
+                similarity_score=item["similarity_score"],
+                relevance_reason=item["relevance_reason"]
+            )
+            search_results.append(search_result)
         
         return SearchResponse(
             results=search_results,
-            total_found=len(search_results),
-            query=request.query,
-            search_type="time",
-            processing_time_ms=processing_time
+            total_found=result["total_found"],
+            query=result["query"],
+            search_type=result["search_type"],
+            processing_time_ms=result["processing_time_ms"]
         )
         
     except HTTPException:
@@ -299,42 +307,52 @@ async def find_similar(
     Uses the content of the specified memory as a search query to find
     semantically similar memories.
     """
-    import time
-    start_time = time.time()
-    
     try:
-        # First, get the target memory by its hash
-        target_memory = await storage.get_by_hash(content_hash)
+        from ...services.memory_service import MemoryService
         
-        if not target_memory:
-            raise HTTPException(status_code=404, detail="Memory not found")
-        
-        # Use the target memory's content to find similar memories
-        similar_results = await storage.retrieve(
-            query=target_memory.content,
-            n_results=n_results + 1  # +1 because the original will be included
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.search_similar(
+            content_hash=content_hash,
+            limit=n_results
         )
         
-        # Filter out the original memory
-        filtered_results = [
-            result for result in similar_results
-            if result.memory.content_hash != content_hash
-        ][:n_results]
+        # Check for service-level errors
+        if not result.get("success", True):
+            raise HTTPException(
+                status_code=404 if "not found" in result.get("message", "").lower() else 500,
+                detail=result.get("message", "Similar search failed")
+            )
         
-        # Convert to search results
-        search_results = [
-            memory_query_result_to_search_result(result)
-            for result in filtered_results
-        ]
-        
-        processing_time = (time.time() - start_time) * 1000
+        # Convert service result to API response format
+        search_results = []
+        for item in result["results"]:
+            # Convert memory response to MemoryResponse format
+            memory_response = MemoryResponse(
+                content=item["memory"]["content"],
+                content_hash=item["memory"]["content_hash"],
+                tags=item["memory"]["tags"],
+                memory_type=item["memory"]["memory_type"],
+                created_at=item["memory"]["created_at"],
+                created_at_iso=item["memory"]["created_at_iso"],
+                updated_at=item["memory"]["updated_at"],
+                updated_at_iso=item["memory"]["updated_at_iso"],
+                metadata=item["memory"]["metadata"]
+            )
+            
+            search_result = SearchResult(
+                memory=memory_response,
+                similarity_score=item["similarity_score"],
+                relevance_reason=item["relevance_reason"]
+            )
+            search_results.append(search_result)
         
         return SearchResponse(
             results=search_results,
-            total_found=len(search_results),
-            query=f"Similar to: {target_memory.content[:50]}...",
-            search_type="similar",
-            processing_time_ms=processing_time
+            total_found=result["total_found"],
+            query=result["query"],
+            search_type=result["search_type"],
+            processing_time_ms=result["processing_time_ms"]
         )
         
     except HTTPException:

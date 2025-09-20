@@ -49,8 +49,8 @@ def get_storage_backend():
     
     if backend == "sqlite-vec" or backend == "sqlite_vec":
         try:
-            from .storage.sqlite_vec import SqliteVecStorage
-            return SqliteVecStorage
+            from .storage.sqlite_vec import SqliteVecMemoryStorage
+            return SqliteVecMemoryStorage
         except ImportError as e:
             logger.error(f"Failed to import SQLite-vec storage: {e}")
             raise
@@ -76,8 +76,8 @@ def get_storage_backend():
     else:
         logger.warning(f"Unknown storage backend '{backend}', defaulting to SQLite-vec")
         try:
-            from .storage.sqlite_vec import SqliteVecStorage
-            return SqliteVecStorage
+            from .storage.sqlite_vec import SqliteVecMemoryStorage
+            return SqliteVecMemoryStorage
         except ImportError as e:
             logger.error(f"Failed to import default SQLite-vec storage: {e}")
             raise
@@ -102,7 +102,7 @@ async def mcp_server_lifespan(server: FastMCP) -> AsyncIterator[MCPServerContext
     # Initialize storage backend based on configuration and availability
     StorageClass = get_storage_backend()
     
-    if StorageClass.__name__ == "SqliteVecStorage":
+    if StorageClass.__name__ == "SqliteVecMemoryStorage":
         storage = StorageClass(
             db_path=CHROMA_PATH / "memory.db",
             embedding_manager=None  # Will be set after creation
@@ -174,39 +174,24 @@ async def store_memory(
         Dictionary with success status and message
     """
     try:
+        from .services.memory_service import MemoryService
+        
         storage = ctx.request_context.lifespan_context.storage
         
-        # Prepare tags and metadata with optional hostname
-        final_tags = tags or []
-        final_metadata = metadata or {}
-        
-        if INCLUDE_HOSTNAME:
-            # Prioritize client-provided hostname, then fallback to server
-            if client_hostname:
-                hostname = client_hostname
-            else:
-                hostname = socket.gethostname()
-                
-            source_tag = f"source:{hostname}"
-            if source_tag not in final_tags:
-                final_tags.append(source_tag)
-            final_metadata["hostname"] = hostname
-        
-        # Create memory object
-        memory = Memory(
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.store_memory(
             content=content,
-            tags=final_tags,
+            tags=tags,
             memory_type=memory_type,
-            metadata=final_metadata
+            metadata=metadata,
+            client_hostname=client_hostname
         )
         
-        # Store memory
-        success, message = await storage.store(memory)
-        
         return {
-            "success": success,
-            "message": message,
-            "content_hash": memory.content_hash
+            "success": result["success"],
+            "message": result["message"],
+            "content_hash": result["content_hash"]
         }
         
     except Exception as e:
@@ -235,31 +220,35 @@ async def retrieve_memory(
         Dictionary with retrieved memories and metadata
     """
     try:
+        from .services.memory_service import MemoryService
+        
         storage = ctx.request_context.lifespan_context.storage
         
-        # Search for memories
-        results = await storage.search(
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.retrieve_memory(
             query=query,
             n_results=n_results,
-            min_similarity=min_similarity
+            similarity_threshold=min_similarity if min_similarity > 0 else None
         )
         
-        # Format results
+        # Convert service result to MCP format
         memories = []
-        for result in results:
+        for item in result["results"]:
             memories.append({
-                "content": result.memory.content,
-                "content_hash": result.memory.content_hash,
-                "tags": result.memory.metadata.tags,
-                "memory_type": result.memory.metadata.memory_type,
-                "created_at": result.memory.metadata.created_at_iso,
-                "similarity_score": result.similarity_score
+                "content": item["memory"]["content"],
+                "content_hash": item["memory"]["content_hash"],
+                "tags": item["memory"]["tags"],
+                "memory_type": item["memory"]["memory_type"],
+                "created_at": item["memory"]["created_at"],
+                "similarity_score": item["similarity_score"],
+                "relevance_reason": item["relevance_reason"]
             })
         
         return {
             "memories": memories,
-            "query": query,
-            "total_results": len(memories)
+            "query": result["query"],
+            "total_results": result["total_found"]
         }
         
     except Exception as e:
@@ -287,34 +276,46 @@ async def search_by_tag(
         Dictionary with matching memories
     """
     try:
+        from .services.memory_service import MemoryService
+        
         storage = ctx.request_context.lifespan_context.storage
+        memory_service = MemoryService(storage)
         
         # Normalize tags to list
         if isinstance(tags, str):
             tags = [tags]
         
-        # Search by tags
-        memories = await storage.search_by_tags(
+        # Use shared service for consistent logic
+        result = await memory_service.search_by_tag(
             tags=tags,
             match_all=match_all
         )
         
-        # Format results
-        results = []
-        for memory in memories:
-            results.append({
-                "content": memory.content,
-                "content_hash": memory.content_hash,
-                "tags": memory.metadata.tags,
-                "memory_type": memory.metadata.memory_type,
-                "created_at": memory.metadata.created_at_iso
+        # Check for errors from service
+        if "error" in result:
+            return {
+                "memories": [],
+                "search_tags": tags,
+                "match_all": match_all,
+                "error": result["error"]
+            }
+        
+        # Convert service result to MCP format
+        mcp_memories = []
+        for item in result["results"]:
+            mcp_memories.append({
+                "content": item["memory"]["content"],
+                "content_hash": item["memory"]["content_hash"],
+                "tags": item["memory"]["tags"],
+                "memory_type": item["memory"]["memory_type"],
+                "created_at": item["memory"]["created_at"]
             })
         
         return {
-            "memories": results,
+            "memories": mcp_memories,
             "search_tags": tags,
             "match_all": match_all,
-            "total_results": len(results)
+            "total_results": result["total_found"]
         }
         
     except Exception as e:
@@ -322,6 +323,7 @@ async def search_by_tag(
         return {
             "memories": [],
             "search_tags": tags,
+            "match_all": match_all,
             "error": f"Failed to search by tags: {str(e)}"
         }
 
@@ -340,15 +342,18 @@ async def delete_memory(
         Dictionary with success status and message
     """
     try:
+        from .services.memory_service import MemoryService
+        
         storage = ctx.request_context.lifespan_context.storage
         
-        # Delete memory
-        success, message = await storage.delete(content_hash)
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.delete_memory(content_hash)
         
         return {
-            "success": success,
-            "message": message,
-            "content_hash": content_hash
+            "success": result["success"],
+            "message": result["message"],
+            "content_hash": result["content_hash"]
         }
         
     except Exception as e:
@@ -368,22 +373,15 @@ async def check_database_health(ctx: Context) -> Dict[str, Any]:
         Dictionary with health status and statistics
     """
     try:
+        from .services.memory_service import MemoryService
+        
         storage = ctx.request_context.lifespan_context.storage
         
-        # Get health status and statistics
-        stats = await storage.get_stats()
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.check_database_health()
         
-        return {
-            "status": "healthy",
-            "backend": storage.__class__.__name__,
-            "statistics": {
-                "total_memories": stats.get("total_memories", 0),
-                "total_tags": stats.get("total_tags", 0),
-                "storage_size": stats.get("storage_size", "unknown"),
-                "last_backup": stats.get("last_backup", "never")
-            },
-            "timestamp": stats.get("timestamp", "unknown")
-        }
+        return result
         
     except Exception as e:
         logger.error(f"Error checking database health: {e}")
@@ -414,47 +412,21 @@ async def list_memories(
         Dictionary with memories and pagination info
     """
     try:
+        from .services.memory_service import MemoryService
+        
         storage = ctx.request_context.lifespan_context.storage
         
-        # Calculate offset
-        offset = (page - 1) * page_size
-        
-        # Get memories with pagination
-        memories = await storage.get_all_memories(
-            limit=page_size,
-            offset=offset
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.list_memories(
+            page=page,
+            page_size=page_size,
+            tag=tag,
+            memory_type=memory_type
         )
         
-        # Apply tag and memory_type filtering if specified
-        if tag or memory_type:
-            filtered_memories = []
-            for memory in memories:
-                if tag and tag not in memory.tags:
-                    continue
-                if memory_type and memory.memory_type != memory_type:
-                    continue
-                filtered_memories.append(memory)
-            memories = filtered_memories
-        
-        # Format results
-        results = []
-        for memory in memories:
-            results.append({
-                "content": memory.content,
-                "content_hash": memory.content_hash,
-                "tags": memory.tags,
-                "memory_type": memory.memory_type,
-                "metadata": memory.metadata,
-                "created_at": memory.created_at_iso,
-                "updated_at": memory.updated_at_iso
-            })
-        
-        return {
-            "memories": results,
-            "page": page,
-            "page_size": page_size,
-            "total_found": len(results)
-        }
+        # Format for MCP response
+        return memory_service.format_mcp_response(result)
         
     except Exception as e:
         logger.error(f"Error listing memories: {e}")
@@ -482,55 +454,41 @@ async def search_by_time(
         Dictionary with matching memories
     """
     try:
+        from .services.memory_service import MemoryService
+        
         storage = ctx.request_context.lifespan_context.storage
         
-        # Use the same time parsing logic as the API
-        from ..web.api.search import parse_time_query
-        try:
-            time_filter = parse_time_query(query)
-            
-            if not time_filter:
-                return {
-                    "success": False,
-                    "message": f"Could not parse time query: '{query}'. Try 'yesterday', 'last week', 'this month', etc."
-                }
-            
-            # Get memories and filter by time (same as API implementation)
-            query_results = await storage.retrieve("", n_results=1000)  # Get many results to filter
-            
-            # Filter by time range
-            filtered_results = []
-            for result in query_results:
-                memory_time = result.memory.created_at
-                if time_filter['start'] <= memory_time <= time_filter['end']:
-                    filtered_results.append(result)
-            
-            # Sort by creation time (newest first) and limit results
-            filtered_results.sort(key=lambda x: x.memory.created_at, reverse=True)
-            results = filtered_results[:n_results]
-            
-        except Exception as e:
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.search_by_time(
+            query=query,
+            n_results=n_results
+        )
+        
+        # Check for errors from service
+        if "error" in result:
             return {
-                "success": False,
-                "message": f"Time search failed: {str(e)}"
+                "memories": [],
+                "query": query,
+                "error": result["error"]
             }
         
-        # Format results
+        # Convert service result to MCP format
         memories = []
-        for result in results:
+        for item in result["results"]:
             memories.append({
-                "content": result.memory.content,
-                "content_hash": result.memory.content_hash,
-                "tags": result.memory.tags,
-                "memory_type": result.memory.memory_type,
-                "created_at": result.memory.created_at_iso,
-                "updated_at": result.memory.updated_at_iso
+                "content": item["memory"]["content"],
+                "content_hash": item["memory"]["content_hash"],
+                "tags": item["memory"]["tags"],
+                "memory_type": item["memory"]["memory_type"],
+                "created_at": item["memory"]["created_at_iso"],
+                "updated_at": item["memory"]["updated_at_iso"]
             })
         
         return {
             "memories": memories,
             "query": query,
-            "total_found": len(memories)
+            "total_found": result["total_found"]
         }
         
     except Exception as e:
@@ -558,48 +516,40 @@ async def search_similar(
         Dictionary with similar memories
     """
     try:
+        from .services.memory_service import MemoryService
+        
         storage = ctx.request_context.lifespan_context.storage
         
-        # Get the target memory first
-        target_memory = await storage.get_by_hash(content_hash)
-        if not target_memory:
-            return {
-                "success": False,
-                "message": "Memory not found"
-            }
-        
-        # Find similar memories using the target memory's content
-        similar_results = await storage.retrieve(
-            query=target_memory.content,
-            n_results=limit + 1  # +1 because the original will be included
+        # Use shared service for consistent logic
+        memory_service = MemoryService(storage)
+        result = await memory_service.search_similar(
+            content_hash=content_hash,
+            limit=limit
         )
         
-        # Filter out the original memory
-        results = [
-            r for r in similar_results 
-            if r.memory.content_hash != content_hash
-        ][:limit]
+        # Check for service-level errors
+        if not result.get("success", True):
+            return {
+                "success": False,
+                "message": result.get("message", "Unknown error occurred")
+            }
         
-        # Format results
+        # Convert service result to MCP format
         similar_memories = []
-        for result in results:
+        for item in result["results"]:
             similar_memories.append({
-                "content": result.memory.content,
-                "content_hash": result.memory.content_hash,
-                "tags": result.memory.tags,
-                "similarity_score": result.relevance_score,
-                "created_at": result.memory.created_at_iso
+                "content": item["memory"]["content"],
+                "content_hash": item["memory"]["content_hash"],
+                "tags": item["memory"]["tags"],
+                "similarity_score": item["similarity_score"],
+                "created_at": item["memory"]["created_at_iso"]
             })
         
         return {
             "success": True,
-            "target_memory": {
-                "content": target_memory.content,
-                "content_hash": target_memory.content_hash,
-                "tags": target_memory.tags
-            },
+            "target_memory": result["target_memory"],
             "similar_memories": similar_memories,
-            "total_found": len(similar_memories)
+            "total_found": result["total_found"]
         }
         
     except Exception as e:
