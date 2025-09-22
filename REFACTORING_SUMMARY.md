@@ -1,5 +1,11 @@
 # Memory Service Refactoring Summary
 
+## 2025-02-XX Duplication Review
+
+- **Memory response serialization** – `src/mcp_memory_service/web/api/memories.py:86` re-implements the same field mapping already provided by `src/mcp_memory_service/services/memory_service.py:83`. We can convert HTTP responses by delegating to `MemoryService.format_memory_response` and avoid keeping two copies of the field list in sync.
+- **Search helpers drift** – `src/mcp_memory_service/web/api/search.py:75` and `src/mcp_memory_service/web/api/search.py:84` duplicate logic that now lives inside `MemoryService.retrieve_memory` and `MemoryService.search_by_tag`. The module still defines legacy helpers (`parse_time_query`, `is_within_time_range`) at `src/mcp_memory_service/web/api/search.py:365` that mirror `src/mcp_memory_service/services/memory_service.py:502` and `src/mcp_memory_service/services/memory_service.py:535`; they appear unused and should either call through to the service or be removed.
+- **MCP tool vs HTTP MCP API** – Each tool is implemented twice (FastMCP server in `src/mcp_memory_service/mcp_server.py` and HTTP bridge in `src/mcp_memory_service/web/api/mcp.py`), with near-identical request handling and result shaping. Examples: `store_memory` (`mcp_server.py:154` vs `web/api/mcp.py:247`), `retrieve_memory` (`mcp_server.py:204` vs `web/api/mcp.py:282`), `search_by_tag` (`mcp_server.py:262` vs `web/api/mcp.py:313`), `delete_memory` (`mcp_server.py:330` vs `web/api/mcp.py:384`), `check_database_health` (`mcp_server.py:367` vs `web/api/mcp.py:398`), `list_memories` (`mcp_server.py:394` vs `web/api/mcp.py:407`), `search_by_time` (`mcp_server.py:440` vs `web/api/mcp.py:427`), and `search_similar` (`mcp_server.py:502` vs `web/api/mcp.py:463`). Consolidating these into shared helpers would keep the tool surface synchronized and reduce error-prone duplication.
+
 ## Problem Identified
 
 The original implementation had **duplicated and inconsistent logic** between the API and MCP tool implementations for `list_memories`:
