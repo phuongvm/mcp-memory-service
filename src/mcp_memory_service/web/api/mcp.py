@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from ..dependencies import get_storage
 from ...utils.hashing import generate_content_hash
+from ...config import CONSOLIDATION_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ MCP_TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Search query for finding relevant memories"},
                 "limit": {"type": "integer", "description": "Maximum number of memories to return", "default": 10},
-                "similarity_threshold": {"type": "number", "description": "Minimum similarity score threshold (0.0-1.0)", "default": 0.7, "minimum": 0.0, "maximum": 1.0}
+                "similarity_threshold": {"type": "number", "description": "Minimum similarity score threshold (0.0-1.0)", "default": CONSOLIDATION_CONFIG['min_similarity'], "minimum": 0.0, "maximum": 1.0}
             },
             "required": ["query"]
         }
@@ -284,7 +285,7 @@ async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -
         
         query = arguments.get("query")
         limit = arguments.get("limit", 10)
-        similarity_threshold = arguments.get("similarity_threshold", 0.7)
+        similarity_threshold = arguments.get("similarity_threshold", CONSOLIDATION_CONFIG['min_similarity'])
         
         # Use shared service for consistent logic
         memory_service = MemoryService(storage)

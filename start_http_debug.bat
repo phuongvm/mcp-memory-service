@@ -55,6 +55,9 @@ set MCP_HTTPS_ENABLED=false
 set MCP_MDNS_ENABLED=true
 set MCP_MDNS_SERVICE_NAME=MCP-Memory-Service-Debug
 set MCP_MEMORY_USE_ONNX=true
+set MCP_ASSOCIATION_MIN_SIMILARITY=0.0
+set MCP_ASSOCIATION_MAX_SIMILARITY=0.7
+set MCP_ASSOCIATION_MAX_PAIRS=100
 
 REM Fix Transformers cache warning
 set HF_HOME=%USERPROFILE%\.cache\huggingface
@@ -77,6 +80,9 @@ echo   ONNX Embeddings: %MCP_MEMORY_USE_ONNX%
 echo   API Key Set: Yes
 echo   Debug Mode: %MCP_DEBUG%
 echo   Log Level: %LOG_LEVEL%
+echo   Association Min Similarity: %MCP_ASSOCIATION_MIN_SIMILARITY%
+echo   Association Max Similarity: %MCP_ASSOCIATION_MAX_SIMILARITY%
+echo   Association Max Pairs: %MCP_ASSOCIATION_MAX_PAIRS%
 echo.
 
 echo Starting MCP Memory Service...
@@ -85,7 +91,6 @@ echo Service will be available at:
 echo   HTTP: http://localhost:%MCP_HTTP_PORT%
 echo   API: http://localhost:%MCP_HTTP_PORT%/api
 echo   Health: http://localhost:%MCP_HTTP_PORT%/api/health
-echo   Dashboard: http://localhost:%MCP_HTTP_PORT%/dashboard
 echo.
 echo Press Ctrl+C to stop the service
 echo.
