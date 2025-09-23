@@ -366,7 +366,10 @@ CONSOLIDATION_CONFIG = {
     'forgetting_enabled': os.getenv('MCP_FORGETTING_ENABLED', 'true').lower() == 'true',
     'relevance_threshold': float(os.getenv('MCP_FORGETTING_RELEVANCE_THRESHOLD', '0.1')),
     'access_threshold_days': int(os.getenv('MCP_FORGETTING_ACCESS_THRESHOLD', '90')),
-    'archive_location': CONSOLIDATION_ARCHIVE_PATH
+    'archive_location': CONSOLIDATION_ARCHIVE_PATH,
+
+    # Retrieve memory configuration
+    'similarity_threshold': float(os.getenv('MCP_SIMILARITY_THRESHOLD', '0.0'))
 }
 
 # Consolidation scheduling settings (for APScheduler integration)

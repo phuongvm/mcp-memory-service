@@ -69,7 +69,7 @@ MCP_TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Search query for finding relevant memories"},
                 "limit": {"type": "integer", "description": "Maximum number of memories to return", "default": 10},
-                "similarity_threshold": {"type": "number", "description": "Minimum similarity score threshold (0.0-1.0)", "default": CONSOLIDATION_CONFIG['min_similarity'], "minimum": 0.0, "maximum": 1.0}
+                "similarity_threshold": {"type": "number", "description": "Minimum similarity score threshold (0.0-1.0)", "default": CONSOLIDATION_CONFIG['similarity_threshold'], "minimum": 0.0, "maximum": 1.0}
             },
             "required": ["query"]
         }
@@ -285,7 +285,7 @@ async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -
         
         query = arguments.get("query")
         limit = arguments.get("limit", 10)
-        similarity_threshold = arguments.get("similarity_threshold", CONSOLIDATION_CONFIG['min_similarity'])
+        similarity_threshold = arguments.get("similarity_threshold", CONSOLIDATION_CONFIG['similarity_threshold'])
         
         # Use shared service for consistent logic
         memory_service = MemoryService(storage)

@@ -55,9 +55,11 @@ set MCP_HTTPS_ENABLED=false
 set MCP_MDNS_ENABLED=true
 set MCP_MDNS_SERVICE_NAME=MCP-Memory-Service-Debug
 set MCP_MEMORY_USE_ONNX=true
-set MCP_ASSOCIATION_MIN_SIMILARITY=0.0
+set MCP_ASSOCIATIONS_ENABLED=true
+set MCP_ASSOCIATION_MIN_SIMILARITY=0.3
 set MCP_ASSOCIATION_MAX_SIMILARITY=0.7
 set MCP_ASSOCIATION_MAX_PAIRS=100
+set MCP_SIMILARITY_THRESHOLD=0.0
 
 REM Fix Transformers cache warning
 set HF_HOME=%USERPROFILE%\.cache\huggingface
@@ -80,9 +82,11 @@ echo   ONNX Embeddings: %MCP_MEMORY_USE_ONNX%
 echo   API Key Set: Yes
 echo   Debug Mode: %MCP_DEBUG%
 echo   Log Level: %LOG_LEVEL%
+echo   Associations Enabled: %MCP_ASSOCIATIONS_ENABLED%
 echo   Association Min Similarity: %MCP_ASSOCIATION_MIN_SIMILARITY%
 echo   Association Max Similarity: %MCP_ASSOCIATION_MAX_SIMILARITY%
 echo   Association Max Pairs: %MCP_ASSOCIATION_MAX_PAIRS%
+echo   Similarity Threshold: %MCP_SIMILARITY_THRESHOLD%
 echo.
 
 echo Starting MCP Memory Service...
