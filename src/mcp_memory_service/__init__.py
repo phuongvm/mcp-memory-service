@@ -47,7 +47,7 @@ def setup_offline_mode():
 # Setup offline mode immediately when this module is imported
 setup_offline_mode()
 
-__version__ = "6.13.3"
+__version__ = "8.7.0"
 
 from .models import Memory, MemoryQueryResult
 from .storage import MemoryStorage
@@ -62,12 +62,6 @@ __all__ = [
 ]
 
 # Import storage backends conditionally
-try:
-    from .storage import ChromaMemoryStorage
-    __all__.append('ChromaMemoryStorage')
-except ImportError:
-    ChromaMemoryStorage = None
-
 try:
     from .storage import SqliteVecMemoryStorage
     __all__.append('SqliteVecMemoryStorage')

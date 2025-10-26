@@ -19,17 +19,29 @@ Provides semantic search, tag-based search, and time-based recall functionality.
 """
 
 import logging
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
 
-from ...storage.sqlite_vec import SqliteVecMemoryStorage
+from ...storage.base import MemoryStorage
 from ...models.memory import Memory, MemoryQueryResult
+from ...config import OAUTH_ENABLED
 from ..dependencies import get_storage
 from .memories import MemoryResponse, memory_to_response
 from ..sse import sse_manager, create_search_completed_event
+
+# Constants
+_TIME_SEARCH_CANDIDATE_POOL_SIZE = 100  # Number of candidates to retrieve for time filtering (reduced for performance)
+
+# OAuth authentication imports (conditional)
+if OAUTH_ENABLED or TYPE_CHECKING:
+    from ..oauth.middleware import require_read_access, AuthenticationResult
+else:
+    # Provide type stubs when OAuth is disabled
+    AuthenticationResult = None
+    require_read_access = None
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -53,6 +65,7 @@ class TimeSearchRequest(BaseModel):
     """Request model for time-based search."""
     query: str = Field(..., description="Natural language time query (e.g., 'last week', 'yesterday')")
     n_results: int = Field(default=10, ge=1, le=100, description="Maximum number of results to return")
+    semantic_query: Optional[str] = Field(None, description="Optional semantic query for relevance filtering within time range")
 
 
 # Response Models
@@ -93,7 +106,8 @@ def memory_to_search_result(memory: Memory, reason: str = None) -> SearchResult:
 @router.post("/search", response_model=SearchResponse, tags=["search"])
 async def semantic_search(
     request: SemanticSearchRequest,
-    storage: SqliteVecMemoryStorage = Depends(get_storage)
+    storage: MemoryStorage = Depends(get_storage),
+    user: AuthenticationResult = Depends(require_read_access) if OAUTH_ENABLED else None
 ):
     """
     Perform semantic similarity search on memory content.
@@ -156,13 +170,15 @@ async def semantic_search(
         )
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Semantic search failed: {str(e)}")
+        logger.error(f"Semantic search failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Search operation failed. Please try again.")
 
 
 @router.post("/search/by-tag", response_model=SearchResponse, tags=["search"])
 async def tag_search(
     request: TagSearchRequest,
-    storage: SqliteVecMemoryStorage = Depends(get_storage)
+    storage: MemoryStorage = Depends(get_storage),
+    user: AuthenticationResult = Depends(require_read_access) if OAUTH_ENABLED else None
 ):
     """
     Search memories by tags.
@@ -236,7 +252,8 @@ async def tag_search(
 @router.post("/search/by-time", response_model=SearchResponse, tags=["search"])
 async def time_search(
     request: TimeSearchRequest,
-    storage: SqliteVecMemoryStorage = Depends(get_storage)
+    storage: MemoryStorage = Depends(get_storage),
+    user: AuthenticationResult = Depends(require_read_access) if OAUTH_ENABLED else None
 ):
     """
     Search memories by time-based queries.
@@ -261,25 +278,47 @@ async def time_search(
                 detail=result["error"]
             )
         
-        # Convert service result to API response format
-        search_results = []
-        for item in result["results"]:
-            search_result = SearchResult(
-                memory=MemoryResponse(
-                    content=item["memory"]["content"],
-                    content_hash=item["memory"]["content_hash"],
-                    tags=item["memory"]["tags"],
-                    memory_type=item["memory"]["memory_type"],
-                    created_at=item["memory"]["created_at"],
-                    created_at_iso=item["memory"]["created_at_iso"],
-                    updated_at=item["memory"]["updated_at"],
-                    updated_at_iso=item["memory"]["updated_at_iso"],
-                    metadata=item["memory"]["metadata"]
-                ),
-                similarity_score=item["similarity_score"],
-                relevance_reason=item["relevance_reason"]
+                status_code=400, 
+                detail=f"Could not parse time query: '{request.query}'. Try 'yesterday', 'last week', 'this month', etc."
             )
-            search_results.append(search_result)
+        
+        # Use semantic query if provided for relevance filtering, otherwise get recent memories
+        if request.semantic_query and request.semantic_query.strip():
+            # Semantic filtering: retrieve by similarity
+            search_query = request.semantic_query.strip()
+            query_results = await storage.retrieve(search_query, n_results=_TIME_SEARCH_CANDIDATE_POOL_SIZE)
+        else:
+            # No semantic filter: get recent memories chronologically
+            recent_memories = await storage.get_recent_memories(n=_TIME_SEARCH_CANDIDATE_POOL_SIZE)
+            query_results = [MemoryQueryResult(memory=m, relevance_score=1.0) for m in recent_memories]
+
+        # Filter by time range using list comprehension
+        filtered_memories = [
+            result for result in query_results
+            if result.memory.created_at and is_within_time_range(
+                datetime.fromtimestamp(result.memory.created_at, tz=timezone.utc),
+                time_filter
+            )
+        ]
+
+        # Sort by recency (newest first) - CRITICAL for proper ordering
+        # Handle potential None values with fallback to 0.0
+        filtered_memories.sort(key=lambda r: r.memory.created_at or 0.0, reverse=True)
+
+        # Limit results AFTER sorting
+        filtered_memories = filtered_memories[:request.n_results]
+        
+        # Convert to search results
+        search_results = [
+            memory_query_result_to_search_result(result)
+            for result in filtered_memories
+        ]
+        
+        # Update relevance reason for time-based results
+        for result in search_results:
+            result.relevance_reason = f"Time match: {request.query}"
+        
+        processing_time = (time.time() - start_time) * 1000
         
         return SearchResponse(
             results=search_results,
@@ -299,7 +338,8 @@ async def time_search(
 async def find_similar(
     content_hash: str,
     n_results: int = Query(default=10, ge=1, le=100, description="Number of similar memories to find"),
-    storage: SqliteVecMemoryStorage = Depends(get_storage)
+    storage: MemoryStorage = Depends(get_storage),
+    user: AuthenticationResult = Depends(require_read_access) if OAUTH_ENABLED else None
 ):
     """
     Find memories similar to a specific memory identified by its content hash.
@@ -365,12 +405,12 @@ async def find_similar(
 def parse_time_query(query: str) -> Optional[Dict[str, Any]]:
     """
     Parse natural language time queries into time ranges.
-    
+
     This is a basic implementation - can be enhanced with more sophisticated
     natural language processing later.
     """
     query_lower = query.lower().strip()
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     
     # Define time mappings
     if query_lower in ['yesterday']:
@@ -398,7 +438,11 @@ def parse_time_query(query: str) -> Optional[Dict[str, Any]]:
     elif query_lower in ['this month']:
         start = now.replace(day=1, hour=0, minute=0, second=0)
         return {'start': start, 'end': now}
-    
+
+    elif query_lower in ['last 2 weeks', 'past 2 weeks', 'last-2-weeks']:
+        start = now - timedelta(weeks=2)
+        return {'start': start, 'end': now}
+
     # Add more time expressions as needed
     return None
 

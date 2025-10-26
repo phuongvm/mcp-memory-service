@@ -15,9 +15,10 @@
 """Memory-related data models."""
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime
 import time
 import logging
+import calendar
 
 # Try to import dateutil, but fall back to standard datetime parsing if not available
 try:
@@ -67,47 +68,67 @@ class Memory:
         now = time.time()
         
         def iso_to_float(iso_str: str) -> float:
-            """Convert ISO string to float timestamp."""
+            """Convert ISO string to float timestamp, ensuring UTC interpretation."""
             if DATEUTIL_AVAILABLE:
-                return dateutil_parser.isoparse(iso_str).timestamp()
+                # dateutil properly handles timezone info
+                parsed_dt = dateutil_parser.isoparse(iso_str)
+                return parsed_dt.timestamp()
             else:
-                # Fallback to basic ISO parsing
+                # Fallback to basic ISO parsing with explicit UTC handling
                 try:
                     # Handle common ISO formats
                     if iso_str.endswith('Z'):
-                        # Remove 'Z' and parse as UTC
+                        # UTC timezone indicated by 'Z'
                         dt = datetime.fromisoformat(iso_str[:-1])
-                        # Treat as UTC by replacing timezone
-                        return dt.replace(tzinfo=timezone.utc).timestamp()
+                        # Treat as UTC and convert to timestamp
+                        import calendar
+                        return calendar.timegm(dt.timetuple()) + dt.microsecond / 1000000.0
                     elif '+' in iso_str or iso_str.count('-') > 2:
                         # Has timezone info, use fromisoformat in Python 3.7+
                         dt = datetime.fromisoformat(iso_str)
                         return dt.timestamp()
                     else:
+                        # No timezone info, assume UTC
                         dt = datetime.fromisoformat(iso_str)
-                        return dt.timestamp()
-                except:
-                    # Last resort: try strptime
-                    dt = datetime.strptime(iso_str[:19], "%Y-%m-%dT%H:%M:%S")
-                    return dt.timestamp()
+                        return calendar.timegm(dt.timetuple()) + dt.microsecond / 1000000.0
+                except (ValueError, TypeError) as e:
+                    # Last resort: try strptime and treat as UTC
+                    try:
+                        dt = datetime.strptime(iso_str[:19], "%Y-%m-%dT%H:%M:%S")
+                        return calendar.timegm(dt.timetuple())
+                    except (ValueError, TypeError):
+                        # If all parsing fails, return current timestamp
+                        logging.warning(f"Failed to parse timestamp '{iso_str}', using current time")
+                        return datetime.now().timestamp()
 
         def float_to_iso(ts: float) -> str:
             """Convert float timestamp to ISO string."""
-            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+            return datetime.utcfromtimestamp(ts).isoformat() + "Z"
 
         # Handle created_at
         if created_at is not None and created_at_iso is not None:
-            # Validate that they represent the same time
+            # Validate that they represent the same time (with more generous tolerance for timezone issues)
             try:
                 iso_ts = iso_to_float(created_at_iso)
-                if abs(created_at - iso_ts) > 1e-6:  # Allow for small floating-point differences
-                    raise ValueError("created_at and created_at_iso do not match")
-                self.created_at = created_at
-                self.created_at_iso = created_at_iso
-            except ValueError as e:
-                logger.warning(f"Invalid created_at or created_at_iso: {e}")
-                self.created_at = now
-                self.created_at_iso = float_to_iso(now)
+                time_diff = abs(created_at - iso_ts)
+                # Allow up to 1 second difference for rounding, but reject obvious timezone mismatches
+                if time_diff > 1.0 and time_diff < 86400:  # Between 1 second and 24 hours suggests timezone issue
+                    logger.info(f"Timezone mismatch detected (diff: {time_diff}s), preferring float timestamp")
+                    # Use the float timestamp as authoritative and regenerate ISO
+                    self.created_at = created_at
+                    self.created_at_iso = float_to_iso(created_at)
+                elif time_diff >= 86400:  # More than 24 hours difference suggests data corruption
+                    logger.warning(f"Large timestamp difference detected ({time_diff}s), using current time")
+                    self.created_at = now
+                    self.created_at_iso = float_to_iso(now)
+                else:
+                    # Small difference, keep both values
+                    self.created_at = created_at
+                    self.created_at_iso = created_at_iso
+            except Exception as e:
+                logger.warning(f"Error parsing timestamps: {e}, using float timestamp")
+                self.created_at = created_at if created_at is not None else now
+                self.created_at_iso = float_to_iso(self.created_at)
         elif created_at is not None:
             self.created_at = created_at
             self.created_at_iso = float_to_iso(created_at)
@@ -125,17 +146,28 @@ class Memory:
 
         # Handle updated_at
         if updated_at is not None and updated_at_iso is not None:
-            # Validate that they represent the same time
+            # Validate that they represent the same time (with more generous tolerance for timezone issues)
             try:
                 iso_ts = iso_to_float(updated_at_iso)
-                if abs(updated_at - iso_ts) > 1e-6:  # Allow for small floating-point differences
-                    raise ValueError("updated_at and updated_at_iso do not match")
-                self.updated_at = updated_at
-                self.updated_at_iso = updated_at_iso
-            except ValueError as e:
-                logger.warning(f"Invalid updated_at or updated_at_iso: {e}")
-                self.updated_at = now
-                self.updated_at_iso = float_to_iso(now)
+                time_diff = abs(updated_at - iso_ts)
+                # Allow up to 1 second difference for rounding, but reject obvious timezone mismatches
+                if time_diff > 1.0 and time_diff < 86400:  # Between 1 second and 24 hours suggests timezone issue
+                    logger.info(f"Timezone mismatch detected in updated_at (diff: {time_diff}s), preferring float timestamp")
+                    # Use the float timestamp as authoritative and regenerate ISO
+                    self.updated_at = updated_at
+                    self.updated_at_iso = float_to_iso(updated_at)
+                elif time_diff >= 86400:  # More than 24 hours difference suggests data corruption
+                    logger.warning(f"Large timestamp difference detected in updated_at ({time_diff}s), using current time")
+                    self.updated_at = now
+                    self.updated_at_iso = float_to_iso(now)
+                else:
+                    # Small difference, keep both values
+                    self.updated_at = updated_at
+                    self.updated_at_iso = updated_at_iso
+            except Exception as e:
+                logger.warning(f"Error parsing updated timestamps: {e}, using float timestamp")
+                self.updated_at = updated_at if updated_at is not None else now
+                self.updated_at_iso = float_to_iso(self.updated_at)
         elif updated_at is not None:
             self.updated_at = updated_at
             self.updated_at_iso = float_to_iso(updated_at)
@@ -152,13 +184,13 @@ class Memory:
             self.updated_at_iso = float_to_iso(now)
         
         # Update legacy timestamp field for backward compatibility
-        self.timestamp = datetime.fromtimestamp(self.created_at, tz=timezone.utc)
+        self.timestamp = datetime.utcfromtimestamp(self.created_at)
 
     def touch(self):
         """Update the updated_at timestamps to the current time."""
         now = time.time()
         self.updated_at = now
-        self.updated_at_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+        self.updated_at_iso = datetime.utcfromtimestamp(now).isoformat() + "Z"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert memory to dictionary format for storage."""

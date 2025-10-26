@@ -37,45 +37,74 @@ from ..config import (
     DATABASE_PATH,
     EMBEDDING_MODEL_NAME,
     MDNS_ENABLED,
-    HTTPS_ENABLED
+    HTTPS_ENABLED,
+    OAUTH_ENABLED
 )
-from ..storage.sqlite_vec import SqliteVecMemoryStorage
-from .dependencies import set_storage, get_storage
+from .dependencies import set_storage, get_storage, create_storage_backend
 from .api.health import router as health_router
 from .api.memories import router as memories_router
 from .api.search import router as search_router
 from .api.events import router as events_router
+from .api.sync import router as sync_router
+from .api.manage import router as manage_router
+from .api.analytics import router as analytics_router
+from .api.documents import router as documents_router
 from .api.mcp import router as mcp_router
 from .sse import sse_manager
 
 logger = logging.getLogger(__name__)
 
 # Global storage instance
-storage: Optional[SqliteVecMemoryStorage] = None
+storage: Optional["MemoryStorage"] = None
 
 # Global mDNS advertiser instance
 mdns_advertiser: Optional[Any] = None
+
+# Global OAuth cleanup task
+oauth_cleanup_task: Optional[asyncio.Task] = None
+
+
+async def oauth_cleanup_background_task():
+    """Background task to periodically clean up expired OAuth tokens and codes."""
+    from .oauth.storage import oauth_storage
+
+    while True:
+        try:
+            # Clean up expired tokens every 5 minutes
+            await asyncio.sleep(300)  # 5 minutes
+
+            cleanup_stats = await oauth_storage.cleanup_expired()
+            if cleanup_stats["expired_codes_cleaned"] > 0 or cleanup_stats["expired_tokens_cleaned"] > 0:
+                logger.info(f"OAuth cleanup: removed {cleanup_stats['expired_codes_cleaned']} codes, "
+                           f"{cleanup_stats['expired_tokens_cleaned']} tokens")
+
+        except asyncio.CancelledError:
+            logger.info("OAuth cleanup task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in OAuth cleanup task: {e}")
+            # Continue running even if there's an error
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan management."""
-    global storage, mdns_advertiser
+    global storage, mdns_advertiser, oauth_cleanup_task
     
     # Startup
     logger.info("Starting MCP Memory Service HTTP interface...")
     try:
-        storage = SqliteVecMemoryStorage(
-            db_path=DATABASE_PATH,
-            embedding_model=EMBEDDING_MODEL_NAME
-        )
-        await storage.initialize()
+        storage = await create_storage_backend()
         set_storage(storage)  # Set the global storage instance
-        logger.info(f"SQLite-vec storage initialized at {DATABASE_PATH}")
         
         # Start SSE manager
         await sse_manager.start()
         logger.info("SSE Manager started")
+
+        # Start OAuth cleanup task if enabled
+        if OAUTH_ENABLED:
+            oauth_cleanup_task = asyncio.create_task(oauth_cleanup_background_task())
+            logger.info("OAuth cleanup background task started")
         
         # Start mDNS service advertisement if enabled
         if MDNS_ENABLED:
@@ -118,10 +147,21 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Error stopping mDNS advertisement: {e}")
     
+    # Stop OAuth cleanup task
+    if oauth_cleanup_task:
+        try:
+            oauth_cleanup_task.cancel()
+            await oauth_cleanup_task
+            logger.info("OAuth cleanup task stopped")
+        except asyncio.CancelledError:
+            logger.info("OAuth cleanup task cancelled successfully")
+        except Exception as e:
+            logger.error(f"Error stopping OAuth cleanup task: {e}")
+
     # Stop SSE manager
     await sse_manager.stop()
     logger.info("SSE Manager stopped")
-    
+
     if storage:
         await storage.close()
 
@@ -148,23 +188,54 @@ def create_app() -> FastAPI:
     )
     
     # Include API routers
+    logger.info("Including API routers...")
     app.include_router(health_router, prefix="/api", tags=["health"])
+    logger.info(f"✓ Included health router with {len(health_router.routes)} routes")
     app.include_router(memories_router, prefix="/api", tags=["memories"])
+    logger.info(f"✓ Included memories router with {len(memories_router.routes)} routes")
     app.include_router(search_router, prefix="/api", tags=["search"])
+    logger.info(f"✓ Included search router with {len(search_router.routes)} routes")
+    app.include_router(manage_router, prefix="/api/manage", tags=["management"])
+    logger.info(f"✓ Included manage router with {len(manage_router.routes)} routes")
+    app.include_router(analytics_router, prefix="/api/analytics", tags=["analytics"])
+    logger.info(f"✓ Included analytics router with {len(analytics_router.routes)} routes")
     app.include_router(events_router, prefix="/api", tags=["events"])
+    logger.info(f"✓ Included events router with {len(events_router.routes)} routes")
+    app.include_router(sync_router, prefix="/api", tags=["sync"])
+    logger.info(f"✓ Included sync router with {len(sync_router.routes)} routes")
+    try:
+        app.include_router(documents_router, prefix="/api/documents", tags=["documents"])
+        logger.info(f"✓ Included documents router with {len(documents_router.routes)} routes")
+    except Exception as e:
+        logger.error(f"✗ Failed to include documents router: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
     
     # Include MCP protocol router
     app.include_router(mcp_router, tags=["mcp-protocol"])
-    
+
+    # Include OAuth routers if enabled
+    if OAUTH_ENABLED:
+        from .oauth.discovery import router as oauth_discovery_router
+        from .oauth.registration import router as oauth_registration_router
+        from .oauth.authorization import router as oauth_authorization_router
+
+        app.include_router(oauth_discovery_router, tags=["oauth-discovery"])
+        app.include_router(oauth_registration_router, prefix="/oauth", tags=["oauth"])
+        app.include_router(oauth_authorization_router, prefix="/oauth", tags=["oauth"])
+
+        logger.info("OAuth 2.1 endpoints enabled")
+    else:
+        logger.info("OAuth 2.1 endpoints disabled")
+
     # Serve static files (dashboard)
     static_path = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_path):
         app.mount("/static", StaticFiles(directory=static_path), name="static")
     
-    @app.get("/", response_class=HTMLResponse)
-    async def dashboard():
-        """Serve the dashboard homepage."""
-        html_template = """
+    def get_api_overview_html():
+        """Generate the API overview HTML template."""
+        return """
         <!DOCTYPE html>
         <html lang="en">
         <head>
@@ -454,7 +525,42 @@ def create_app() -> FastAPI:
                     font-size: 0.875rem;
                     font-weight: 600;
                 }
-                
+
+                .nav-buttons {
+                    display: flex;
+                    gap: 1rem;
+                    margin-top: 1rem;
+                    justify-content: center;
+                }
+
+                .nav-btn {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 0.5rem;
+                    padding: 0.75rem 1.5rem;
+                    background: var(--primary);
+                    color: var(--white);
+                    text-decoration: none;
+                    border-radius: 0.5rem;
+                    font-weight: 600;
+                    transition: background-color 0.2s;
+                    box-shadow: var(--shadow);
+                }
+
+                .nav-btn:hover {
+                    background: var(--primary-dark);
+                    text-decoration: none;
+                    color: var(--white);
+                }
+
+                .nav-btn.secondary {
+                    background: var(--gray);
+                }
+
+                .nav-btn.secondary:hover {
+                    background: #475569;
+                }
+
                 .loading {
                     display: inline-block;
                     width: 1rem;
@@ -494,11 +600,25 @@ def create_app() -> FastAPI:
                         <div class="logo-icon">🧠</div>
                         <div>
                             <h1>MCP Memory Service</h1>
-                            <p class="subtitle">Intelligent Semantic Memory with SQLite-vec</p>
+                            <p class="subtitle" id="subtitle">Intelligent Semantic Memory with <span id="backend-name">Loading...</span></p>
                         </div>
                     </div>
                     <div class="version-badge">
-                        <span>✅</span> v""" + __version__ + """ - Latest Release
+                        <span>✅</span> <span id="version-display">Loading...</span> - Latest Release
+                    </div>
+                    <div class="nav-buttons">
+                        <a href="/" class="nav-btn">
+                            <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/>
+                            </svg>
+                            Interactive Dashboard
+                        </a>
+                        <a href="/api/docs" class="nav-btn secondary" target="_blank">
+                            <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M14,17H7V15H14M17,13H7V11H17M17,9H7V7H17M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3Z"/>
+                            </svg>
+                            Swagger UI
+                        </a>
                     </div>
                 </header>
                 
@@ -711,10 +831,103 @@ def create_app() -> FastAPI:
                 // Update stats every 30 seconds
                 setInterval(updateStats, 30000);
             </script>
+
+            <script>
+                // Dynamic content loading for API overview
+                function getBackendDisplayName(backend) {
+                    const backendMap = {
+                        'sqlite-vec': 'SQLite-vec',
+                        'sqlite_vec': 'SQLite-vec',
+                        'cloudflare': 'Cloudflare D1 + Vectorize',
+                        'hybrid': 'Hybrid (SQLite-vec + Cloudflare)'
+                    };
+                    return backendMap[backend] || backend || 'Unknown Backend';
+                }
+
+                async function loadDynamicInfo() {
+                    try {
+                        // Load detailed health information
+                        const response = await fetch('/api/health/detailed');
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+                        const healthData = await response.json();
+
+                        // Update version display
+                        const versionEl = document.getElementById('version-display');
+                        if (versionEl && healthData.version) {
+                            versionEl.textContent = `v${healthData.version}`;
+                        }
+
+                        // Update backend name and subtitle
+                        const backendNameEl = document.getElementById('backend-name');
+                        const subtitleEl = document.getElementById('subtitle');
+
+                        if (healthData.storage && healthData.storage.backend) {
+                            const backendDisplay = getBackendDisplayName(healthData.storage.backend);
+
+                            if (backendNameEl) {
+                                backendNameEl.textContent = backendDisplay;
+                            }
+
+                            if (subtitleEl) {
+                                subtitleEl.innerHTML = `Intelligent Semantic Memory with <span id="backend-name">${backendDisplay}</span>`;
+                            }
+                        }
+
+                    } catch (error) {
+                        console.error('Error loading dynamic info:', error);
+
+                        // Fallback values on error
+                        const versionEl = document.getElementById('version-display');
+                        const backendNameEl = document.getElementById('backend-name');
+                        const subtitleEl = document.getElementById('subtitle');
+
+                        if (versionEl) {
+                            versionEl.textContent = 'v?.?.?';
+                        }
+
+                        if (backendNameEl) {
+                            backendNameEl.textContent = 'Unknown Backend';
+                        }
+
+                        if (subtitleEl) {
+                            subtitleEl.innerHTML = 'Intelligent Semantic Memory with <span id="backend-name">Unknown Backend</span>';
+                        }
+                    }
+                }
+
+                // Load dynamic content when page loads
+                document.addEventListener('DOMContentLoaded', loadDynamicInfo);
+            </script>
         </body>
         </html>
         """
-        return html_template
+
+    @app.get("/api-overview", response_class=HTMLResponse)
+    async def api_overview():
+        """Serve the API documentation overview page."""
+        return get_api_overview_html()
+
+    @app.get("/", response_class=HTMLResponse)
+    async def dashboard():
+        """Serve the dashboard homepage."""
+        # Serve the migrated interactive dashboard instead of hardcoded template
+        try:
+            # Path to the migrated dashboard HTML file
+            dashboard_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+
+            if os.path.exists(dashboard_path):
+                # Read and serve the migrated dashboard
+                with open(dashboard_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            else:
+                # Fallback to original template if dashboard not found
+                return html_template
+        except Exception as e:
+            # Error fallback to original template
+            logger.warning(f"Error loading migrated dashboard: {e}")
+            return html_template
     
     return app
 

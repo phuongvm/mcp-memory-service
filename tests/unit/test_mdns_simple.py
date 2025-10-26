@@ -37,7 +37,8 @@ def run_test(test_func, test_name):
         return True
     except Exception as e:
         print(f"❌ {test_name}: {e}")
-        print(f"   {traceback.format_exc().split('\\n')[-3].strip()}")
+        tb_lines = traceback.format_exc().split('\n')
+        print(f"   {tb_lines[-3].strip()}")
         return False
 
 def test_imports():

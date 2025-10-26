@@ -361,10 +361,30 @@ class TestCloudflareStorage:
         mock_client = AsyncMock()
         cloudflare_storage.client = mock_client
         cloudflare_storage._embedding_cache = {"test": [1, 2, 3]}
-        
+
         await cloudflare_storage.close()
-        
+
         # Verify client was closed and cache cleared
         mock_client.aclose.assert_called_once()
         assert cloudflare_storage.client is None
         assert len(cloudflare_storage._embedding_cache) == 0
+
+    def test_sanitized_method(self, cloudflare_storage):
+        """Test tag sanitization method."""
+        # Test with None
+        assert cloudflare_storage.sanitized(None) == "[]"
+
+        # Test with string
+        assert cloudflare_storage.sanitized("tag1,tag2,tag3") == '["tag1", "tag2", "tag3"]'
+
+        # Test with list
+        assert cloudflare_storage.sanitized(["tag1", "tag2"]) == '["tag1", "tag2"]'
+
+        # Test with empty string
+        assert cloudflare_storage.sanitized("") == "[]"
+
+        # Test with empty list
+        assert cloudflare_storage.sanitized([]) == "[]"
+
+        # Test with mixed types in list
+        assert cloudflare_storage.sanitized([1, "tag2", 3.14]) == '["1", "tag2", "3.14"]'

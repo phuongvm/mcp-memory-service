@@ -11,6 +11,68 @@ import subprocess
 import argparse
 import shutil
 from pathlib import Path
+import re
+
+def is_python_version_at_least(major, minor):
+    """Check if current Python version is at least the specified version.
+
+    Args:
+        major: Major version number
+        minor: Minor version number
+
+    Returns:
+        bool: True if current Python version >= specified version
+    """
+    return sys.version_info >= (major, minor)
+
+def get_python_version_string():
+    """Get Python version as a string (e.g., '3.12').
+
+    Returns:
+        str: Python version string
+    """
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
+
+def get_package_version():
+    """Get the current package version from pyproject.toml.
+
+    Returns:
+        str: The version string from pyproject.toml or fallback version
+    """
+    fallback_version = "7.2.0"
+
+    try:
+        # Get path to pyproject.toml relative to this script
+        pyproject_path = Path(__file__).parent.parent.parent / "pyproject.toml"
+
+        if not pyproject_path.exists():
+            print_warning(f"pyproject.toml not found at {pyproject_path}, using fallback version {fallback_version}")
+            return fallback_version
+
+        with open(pyproject_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Extract version using regex - matches standard pyproject.toml format
+        version_pattern = r'^version\s*=\s*["\']([^"\'\n]+)["\']'
+        version_match = re.search(version_pattern, content, re.MULTILINE)
+
+        if version_match:
+            version = version_match.group(1).strip()
+            if version:  # Ensure non-empty version
+                return version
+            else:
+                print_warning("Empty version found in pyproject.toml, using fallback")
+                return fallback_version
+        else:
+            print_warning("Version not found in pyproject.toml, using fallback")
+            return fallback_version
+
+    except (OSError, IOError) as e:
+        print_warning(f"Failed to read pyproject.toml: {e}, using fallback version {fallback_version}")
+        return fallback_version
+    except Exception as e:
+        print_warning(f"Unexpected error parsing version: {e}, using fallback version {fallback_version}")
+        return fallback_version
 
 def print_header(text):
     """Print a formatted header."""
@@ -37,6 +99,113 @@ def print_success(text):
 def print_warning(text):
     """Print formatted warning text."""
     print(f"  ⚠️  {text}")
+
+def run_command_safe(cmd, success_msg=None, error_msg=None, silent=False,
+                     timeout=None, fallback_in_venv=False):
+    """
+    Run a subprocess command with standardized error handling.
+
+    Args:
+        cmd: Command to run (list of strings)
+        success_msg: Message to print on success
+        error_msg: Custom error message
+        silent: If True, suppress stdout/stderr
+        timeout: Command timeout in seconds
+        fallback_in_venv: If True and command fails, warn instead of error when in virtual environment
+
+    Returns:
+        tuple: (success: bool, result: subprocess.CompletedProcess or None)
+    """
+    # Validate command input
+    if not cmd or not isinstance(cmd, (list, tuple)):
+        print_error("Invalid command: must be a non-empty list or tuple")
+        return False, None
+
+    if not all(isinstance(arg, (str, int, float)) for arg in cmd if arg is not None):
+        print_error("Invalid command arguments: all arguments must be strings, numbers, or None")
+        return False, None
+
+    # Filter out None values and convert to strings
+    cmd_clean = [str(arg) for arg in cmd if arg is not None]
+    if not cmd_clean:
+        print_error("Command is empty after filtering")
+        return False, None
+
+    try:
+        kwargs = {'capture_output': False, 'text': True}
+        if silent:
+            kwargs.update({'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL})
+        if timeout:
+            kwargs['timeout'] = timeout
+
+        result = subprocess.run(cmd_clean, check=True, **kwargs)
+        if success_msg:
+            print_success(success_msg)
+        return True, result
+    except subprocess.TimeoutExpired as e:
+        if error_msg:
+            timeout_msg = error_msg
+        elif hasattr(e, 'timeout') and e.timeout:
+            timeout_msg = f"Command timed out after {e.timeout}s"
+        else:
+            timeout_msg = "Command timed out"
+        print_error(timeout_msg)
+        return False, None
+    except subprocess.CalledProcessError as e:
+        if fallback_in_venv:
+            in_venv = sys.prefix != sys.base_prefix
+            if in_venv:
+                fallback_msg = error_msg or "Command failed, but you're in a virtual environment. If you're using an alternative package manager, this may be normal."
+                print_warning(fallback_msg)
+                print_warning("Note: Installation may not have succeeded. Please verify manually if needed.")
+                return True, None  # Proceed anyway in venv with warning
+
+        if error_msg:
+            print_error(error_msg)
+        else:
+            # Safe command formatting for error messages
+            cmd_str = ' '.join(f'"{arg}"' if ' ' in str(arg) else str(arg) for arg in cmd_clean)
+            print_error(f"Command failed (exit code {e.returncode}): {cmd_str}")
+        return False, None
+    except FileNotFoundError:
+        if error_msg:
+            print_error(error_msg)
+        else:
+            print_error(f"Command not found: {cmd_clean[0]}")
+        return False, None
+    except PermissionError:
+        permission_msg = error_msg or f"Permission denied executing: {cmd_clean[0]}"
+        print_error(permission_msg)
+        return False, None
+
+def install_package_safe(package, success_msg=None, error_msg=None, fallback_in_venv=True):
+    """
+    Install a Python package with standardized error handling.
+
+    Args:
+        package: Package name or requirement string
+        success_msg: Message to print on success
+        error_msg: Custom error message
+        fallback_in_venv: If True, warn instead of error when in virtual environment
+
+    Returns:
+        bool: True if installation succeeded OR if fallback was applied (see warning messages)
+    """
+    cmd = [sys.executable, '-m', 'pip', 'install', package]
+    default_success = success_msg or f"{package} installed successfully"
+    default_error = error_msg or f"Failed to install {package}"
+
+    if fallback_in_venv:
+        default_error += ". If you're using an alternative package manager like uv, please install manually."
+
+    success, _ = run_command_safe(
+        cmd,
+        success_msg=default_success,
+        error_msg=default_error,
+        silent=True,
+        fallback_in_venv=fallback_in_venv
+    )
+    return success
 
 def detect_system():
     """Detect the system architecture and platform."""
@@ -235,13 +404,16 @@ def check_dependencies():
     pip_installed = False
     
     # Try subprocess check first
-    try:
-        subprocess.check_call([sys.executable, '-m', 'pip', '--version'], 
-                             stdout=subprocess.DEVNULL, 
-                             stderr=subprocess.DEVNULL)
+    success, _ = run_command_safe(
+        [sys.executable, '-m', 'pip', '--version'],
+        success_msg="pip is installed",
+        silent=True,
+        fallback_in_venv=True
+    )
+
+    if success:
         pip_installed = True
-        print_info("pip is installed")
-    except subprocess.SubprocessError:
+    else:
         # Fallback to import check
         try:
             import pip
@@ -267,19 +439,9 @@ def check_dependencies():
         print_warning("setuptools is not installed. Will attempt to install it.")
         # If pip is available, use it to install setuptools
         if pip_installed:
-            try:
-                subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'setuptools'], 
-                                    stdout=subprocess.DEVNULL)
-                print_success("setuptools installed successfully")
-            except subprocess.SubprocessError:
-                # Check if in virtual environment
-                in_venv = sys.prefix != sys.base_prefix
-                if in_venv:
-                    print_warning("Failed to install setuptools with pip. If you're using an alternative package manager "
-                                "like uv, please install setuptools manually using that tool (e.g., 'uv pip install setuptools').")
-                else:
-                    print_error("Failed to install setuptools. Please install it manually.")
-                    return False
+            success = install_package_safe("setuptools")
+            if not success:
+                return False
         else:
             # Should be unreachable since pip_installed would only be False if we returned earlier
             print_error("Cannot install setuptools without pip. Please install setuptools manually.")
@@ -293,19 +455,9 @@ def check_dependencies():
         print_warning("wheel is not installed. Will attempt to install it.")
         # If pip is available, use it to install wheel
         if pip_installed:
-            try:
-                subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'wheel'], 
-                                    stdout=subprocess.DEVNULL)
-                print_success("wheel installed successfully")
-            except subprocess.SubprocessError:
-                # Check if in virtual environment
-                in_venv = sys.prefix != sys.base_prefix
-                if in_venv:
-                    print_warning("Failed to install wheel with pip. If you're using an alternative package manager "
-                                "like uv, please install wheel manually using that tool (e.g., 'uv pip install wheel').")
-                else:
-                    print_error("Failed to install wheel. Please install it manually.")
-                    return False
+            success = install_package_safe("wheel")
+            if not success:
+                return False
         else:
             # Should be unreachable since pip_installed would only be False if we returned earlier
             print_error("Cannot install wheel without pip. Please install wheel manually.")
@@ -337,33 +489,43 @@ def install_pytorch_macos_intel():
             print_info(f"Installing PyTorch for macOS Intel (Python {python_version.major}.{python_version.minor})...")
             print_info("Attempting to install latest PyTorch compatible with Python 3.13...")
             
-            try:
-                # Try to install without version specifiers to get latest compatible version
-                cmd = [
-                    sys.executable, '-m', 'pip', 'install',
-                    "torch", "torchvision", "torchaudio"
-                ]
-                print_info(f"Running: {' '.join(cmd)}")
-                subprocess.check_call(cmd)
+            # Try to install without version specifiers to get latest compatible version
+            cmd = [
+                sys.executable, '-m', 'pip', 'install',
+                "torch", "torchvision", "torchaudio"
+            ]
+            success, _ = run_command_safe(
+                cmd,
+                success_msg="Latest PyTorch installed successfully",
+                silent=False
+            )
+
+            if success:
                 st_version = "3.0.0"  # Newer sentence-transformers for newer PyTorch
-            except subprocess.SubprocessError as e:
-                print_warning(f"Failed to install latest PyTorch: {e}")
+            else:
+                print_warning("Failed to install latest PyTorch, trying fallback version...")
                 # Fallback to a specific version
                 torch_version = "2.1.0"
                 torch_vision_version = "0.16.0"
                 torch_audio_version = "2.1.0"
                 st_version = "3.0.0"
-                
+
                 print_info(f"Trying fallback to PyTorch {torch_version}...")
-                
+
                 cmd = [
                     sys.executable, '-m', 'pip', 'install',
                     f"torch=={torch_version}",
                     f"torchvision=={torch_vision_version}",
                     f"torchaudio=={torch_audio_version}"
                 ]
-                print_info(f"Running: {' '.join(cmd)}")
-                subprocess.check_call(cmd)
+                success, _ = run_command_safe(
+                    cmd,
+                    success_msg=f"PyTorch {torch_version} installed successfully",
+                    error_msg="Failed to install PyTorch fallback version",
+                    silent=False
+                )
+                if not success:
+                    return False
         else:
             # Use traditional versions for older Python
             torch_version = "1.13.1"
@@ -374,30 +536,26 @@ def install_pytorch_macos_intel():
             print_info(f"Installing PyTorch {torch_version} for macOS Intel (Python {python_version.major}.{python_version.minor})...")
             
             # Install PyTorch first with compatible version
-            cmd = [
-                sys.executable, '-m', 'pip', 'install',
-                f"torch=={torch_version}",
-                f"torchvision=={torch_vision_version}",
-                f"torchaudio=={torch_audio_version}"
-            ]
-            
-            print_info(f"Running: {' '.join(cmd)}")
-            subprocess.check_call(cmd)
+            packages = [f"torch=={torch_version}", f"torchvision=={torch_vision_version}", f"torchaudio=={torch_audio_version}"]
+            success, _ = run_command_safe(
+                [sys.executable, '-m', 'pip', 'install'] + packages,
+                success_msg=f"PyTorch {torch_version} installed successfully"
+            )
+            if not success:
+                raise RuntimeError(f"Failed to install PyTorch {torch_version}")
         
         # Install a compatible version of sentence-transformers
         print_info(f"Installing sentence-transformers {st_version}...")
-        
-        cmd = [
-            sys.executable, '-m', 'pip', 'install',
-            f"sentence-transformers=={st_version}"
-        ]
-        
-        print_info(f"Running: {' '.join(cmd)}")
-        subprocess.check_call(cmd)
+        success, _ = run_command_safe(
+            [sys.executable, '-m', 'pip', 'install', f"sentence-transformers=={st_version}"],
+            success_msg=f"sentence-transformers {st_version} installed successfully"
+        )
+        if not success:
+            raise RuntimeError(f"Failed to install sentence-transformers {st_version}")
         
         print_success(f"PyTorch {torch_version} and sentence-transformers {st_version} installed successfully for macOS Intel")
         return True
-    except subprocess.SubprocessError as e:
+    except RuntimeError as e:
         print_error(f"Failed to install PyTorch for macOS Intel: {e}")
         
         # Provide fallback instructions
@@ -464,19 +622,28 @@ def install_pytorch_windows(gpu_info):
             f"--index-url={index_url}"
         ]
         
-        print_info(f"Running: {' '.join(cmd)}")
-        subprocess.check_call(cmd)
+        success, _ = run_command_safe(
+            cmd,
+            success_msg="PyTorch installed successfully for Windows",
+            error_msg="Failed to install PyTorch for Windows",
+            silent=False
+        )
+        if not success:
+            return False
         
         # Check if DirectML is needed
         if gpu_info["has_directml"]:
-            print_info("Installing torch-directml for DirectML support")
-            subprocess.check_call([
-                sys.executable, '-m', 'pip', 'install', 'torch-directml>=0.2.0'
-            ])
+            success = install_package_safe(
+                "torch-directml>=0.2.0",
+                success_msg="torch-directml installed successfully for DirectML support",
+                error_msg="Failed to install torch-directml"
+            )
+            if not success:
+                print_warning("DirectML support may not be available")
             
         print_success("PyTorch installed successfully for Windows")
         return True
-    except subprocess.SubprocessError as e:
+    except RuntimeError as e:
         print_error(f"Failed to install PyTorch for Windows: {e}")
         print_warning("You may need to manually install PyTorch using instructions from https://pytorch.org/get-started/locally/")
         return False
@@ -486,8 +653,9 @@ def detect_storage_backend_compatibility(system_info, gpu_info):
     print_step("3a", "Analyzing storage backend compatibility")
     
     compatibility = {
-        "chromadb": {"supported": True, "issues": [], "recommendation": "default"},
-        "sqlite_vec": {"supported": True, "issues": [], "recommendation": "lightweight"}
+        "cloudflare": {"supported": True, "issues": [], "recommendation": "production"},
+        "sqlite_vec": {"supported": True, "issues": [], "recommendation": "development"},
+        "chromadb": {"supported": True, "issues": [], "recommendation": "team"}
     }
     
     # Check ChromaDB compatibility issues
@@ -537,6 +705,9 @@ def detect_storage_backend_compatibility(system_info, gpu_info):
     for backend, info in compatibility.items():
         status = "✅" if info["supported"] else "❌"
         rec_text = {
+            "production": "☁️ PRODUCTION (Cloud)",
+            "development": "🪶 DEVELOPMENT (Local)",
+            "team": "👥 TEAM (Multi-client)",
             "recommended": "🌟 RECOMMENDED",
             "default": "📦 Standard",
             "problematic": "⚠️  May have issues",
@@ -574,81 +745,253 @@ def choose_storage_backend(system_info, gpu_info, args):
             break
     
     if not recommended_backend:
-        recommended_backend = "chromadb"  # Default fallback
-    
-    # Interactive selection if no auto-recommendation is clear
-    if compatibility["chromadb"]["recommendation"] == "problematic":
-        print_step("3b", "Storage Backend Selection")
-        print_info("Based on your system, ChromaDB may have installation issues.")
-        print_info("SQLite-vec is recommended as a lightweight, compatible alternative.")
-        print_info("")
-        print_info("Available options:")
-        print_info("  1. SQLite-vec (Recommended) - Lightweight, fast, minimal dependencies")
-        print_info("  2. ChromaDB (Standard) - Full-featured but may have issues on your system")
-        print_info("  3. Auto-detect - Try ChromaDB first, fallback to SQLite-vec if it fails")
-        print_info("")
-        
-        while True:
-            try:
-                choice = input("Choose storage backend [1-3] (default: 1): ").strip()
-                if not choice:
-                    choice = "1"
-                
-                if choice == "1":
-                    return "sqlite_vec"
-                elif choice == "2":
-                    return "chromadb"
-                elif choice == "3":
-                    return "auto_detect"
-                else:
-                    print_error("Please enter 1, 2, or 3")
-            except (EOFError, KeyboardInterrupt):
-                print_info("\nUsing recommended backend: sqlite_vec")
+        recommended_backend = "sqlite_vec"  # Default fallback for local development
+
+    # Interactive backend selection
+    print_step("3b", "Storage Backend Selection")
+    print_info("Choose the storage backend that best fits your use case:")
+    print_info("")
+    print_info("Usage scenarios:")
+    print_info("  1. Production/Shared (Cloudflare) - Cloud storage, multi-user access, requires credentials")
+    print_info("  2. Development/Personal (SQLite-vec) - Local, lightweight, single-user")
+    print_info("  3. Team/Multi-client (ChromaDB) - Local server, multiple clients")
+    print_info("  4. Auto-detect - Try optimal backend based on your system")
+    print_info("")
+
+    # Show compatibility analysis
+    for i, (backend, info) in enumerate(compatibility.items(), 1):
+        if backend == "auto_detect":
+            continue
+        status = "✅" if info["supported"] else "❌"
+        rec_text = {
+            "production": "☁️ PRODUCTION (Cloud)",
+            "development": "🪶 DEVELOPMENT (Local)",
+            "team": "👥 TEAM (Multi-client)",
+            "recommended": "🌟 RECOMMENDED",
+            "problematic": "⚠️  May have issues"
+        }.get(info["recommendation"], "")
+        print_info(f"  {status} {i}. {backend.upper()}: {rec_text}")
+        if info["issues"]:
+            for issue in info["issues"]:
+                print_info(f"     • {issue}")
+
+    print_info("")
+    default_choice = "2" if compatibility["chromadb"]["recommendation"] == "problematic" else "2"
+
+    while True:
+        try:
+            choice = input(f"Choose storage backend [1-4] (default: {default_choice}): ").strip()
+            if not choice:
+                choice = default_choice
+
+            if choice == "1":
+                return "cloudflare"
+            elif choice == "2":
                 return "sqlite_vec"
-    
-    return recommended_backend
+            elif choice == "3":
+                return "chromadb"
+            elif choice == "4":
+                return "auto_detect"
+            else:
+                print_error("Please enter 1, 2, 3, or 4")
+        except (EOFError, KeyboardInterrupt):
+            print_info(f"\nUsing recommended backend: sqlite_vec")
+            return "sqlite_vec"
+
+def setup_cloudflare_credentials():
+    """Interactive setup of Cloudflare credentials."""
+    print_step("3c", "Cloudflare Backend Setup")
+    print_info("Cloudflare backend requires API credentials for D1 database and Vectorize index.")
+    print_info("You'll need:")
+    print_info("  • Cloudflare API Token (with D1 and Vectorize permissions)")
+    print_info("  • Account ID")
+    print_info("  • D1 Database ID")
+    print_info("  • Vectorize Index name")
+    print_info("")
+    print_info("Visit https://dash.cloudflare.com to get these credentials.")
+    print_info("")
+
+    credentials = {}
+
+    try:
+        # Get API Token
+        while True:
+            token = input("Enter Cloudflare API Token: ").strip()
+            if token:
+                credentials['CLOUDFLARE_API_TOKEN'] = token
+                break
+            print_error("API token is required")
+
+        # Get Account ID
+        while True:
+            account_id = input("Enter Cloudflare Account ID: ").strip()
+            if account_id:
+                credentials['CLOUDFLARE_ACCOUNT_ID'] = account_id
+                break
+            print_error("Account ID is required")
+
+        # Get D1 Database ID
+        while True:
+            d1_id = input("Enter D1 Database ID: ").strip()
+            if d1_id:
+                credentials['CLOUDFLARE_D1_DATABASE_ID'] = d1_id
+                break
+            print_error("D1 Database ID is required")
+
+        # Get Vectorize Index
+        vectorize_index = input("Enter Vectorize Index name (default: mcp-memory-index): ").strip()
+        if not vectorize_index:
+            vectorize_index = "mcp-memory-index"
+        credentials['CLOUDFLARE_VECTORIZE_INDEX'] = vectorize_index
+
+        # Set storage backend
+        credentials['MCP_MEMORY_STORAGE_BACKEND'] = 'cloudflare'
+
+        return credentials
+
+    except (EOFError, KeyboardInterrupt):
+        print_info("\nCloudflare setup cancelled.")
+        return None
+
+def save_credentials_to_env(credentials):
+    """Save credentials to .env file."""
+    env_file = Path('.env')
+
+    # Read existing .env content if it exists
+    existing_lines = []
+    if env_file.exists():
+        with open(env_file, 'r') as f:
+            existing_lines = f.readlines()
+
+    # Filter out any existing Cloudflare variables
+    filtered_lines = [
+        line for line in existing_lines
+        if not any(key in line for key in credentials.keys())
+    ]
+
+    # Add new credentials
+    with open(env_file, 'w') as f:
+        # Write existing non-Cloudflare lines
+        f.writelines(filtered_lines)
+
+        # Add separator if file wasn't empty
+        if filtered_lines and not filtered_lines[-1].endswith('\n'):
+            f.write('\n')
+        if filtered_lines:
+            f.write('\n# Cloudflare Backend Configuration\n')
+
+        # Write Cloudflare credentials
+        for key, value in credentials.items():
+            f.write(f'{key}={value}\n')
+
+    print_success(f"Credentials saved to .env file")
+
+def test_cloudflare_connection(credentials):
+    """Test Cloudflare API connection."""
+    print_info("Testing Cloudflare API connection...")
+
+    try:
+        import requests
+
+        headers = {
+            'Authorization': f"Bearer {credentials['CLOUDFLARE_API_TOKEN']}",
+            'Content-Type': 'application/json'
+        }
+
+        # Test API token validity
+        response = requests.get(
+            "https://api.cloudflare.com/client/v4/user/tokens/verify",
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                print_success("API token is valid")
+                return True
+            else:
+                print_error(f"API token validation failed: {data.get('errors')}")
+                return False
+        else:
+            print_error(f"API connection failed with status {response.status_code}")
+            return False
+
+    except ImportError:
+        print_warning("Could not test connection (requests not installed)")
+        print_info("Connection will be tested when the service starts")
+        return True
+    except Exception as e:
+        print_warning(f"Could not test connection: {e}")
+        print_info("Connection will be tested when the service starts")
+        return True
 
 def install_storage_backend(backend, system_info):
     """Install the chosen storage backend."""
     print_step("3c", f"Installing {backend} storage backend")
-    
-    if backend == "sqlite_vec":
-        try:
-            print_info("Installing SQLite-vec...")
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'sqlite-vec'])
-            print_success("SQLite-vec installed successfully")
-            return True
-        except subprocess.SubprocessError as e:
-            print_error(f"Failed to install SQLite-vec: {e}")
-            return False
+
+    if backend == "cloudflare":
+        print_info("Cloudflare backend uses cloud services - no local dependencies needed")
+
+        # Setup credentials interactively
+        credentials = setup_cloudflare_credentials()
+        if not credentials:
+            print_warning("Cloudflare setup cancelled. Falling back to SQLite-vec.")
+            return install_storage_backend("sqlite_vec", system_info)
+
+        # Save credentials to .env file
+        save_credentials_to_env(credentials)
+
+        # Test connection
+        connection_ok = test_cloudflare_connection(credentials)
+        if connection_ok:
+            print_success("Cloudflare backend configured successfully")
+            return "cloudflare"
+        else:
+            print_warning("Cloudflare connection test failed. You can continue and fix credentials later.")
+            fallback = input("Continue with Cloudflare anyway? [y/N]: ").strip().lower()
+            if fallback.startswith('y'):
+                return "cloudflare"
+            else:
+                print_info("Falling back to SQLite-vec for local development.")
+                return install_storage_backend("sqlite_vec", system_info)
+
+    elif backend == "sqlite_vec":
+        return install_package_safe(
+            "sqlite-vec",
+            success_msg="SQLite-vec installed successfully",
+            error_msg="Failed to install SQLite-vec"
+        )
             
     elif backend == "chromadb":
-        try:
-            print_info("Installing ChromaDB...")
-            chromadb_version = "0.5.23"
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', f'chromadb=={chromadb_version}'])
-            print_success(f"ChromaDB {chromadb_version} installed successfully")
-            return True
-        except subprocess.SubprocessError as e:
-            print_error(f"Failed to install ChromaDB: {e}")
+        chromadb_version = "0.5.23"
+        success = install_package_safe(
+            f"chromadb=={chromadb_version}",
+            success_msg=f"ChromaDB {chromadb_version} installed successfully",
+            error_msg="Failed to install ChromaDB"
+        )
+        if not success:
             print_info("This is a known issue on some systems (especially older macOS Intel)")
-            return False
+        return success
             
     elif backend == "auto_detect":
         print_info("Attempting auto-detection...")
-        
-        # Try ChromaDB first
-        print_info("Trying ChromaDB installation...")
-        if install_storage_backend("chromadb", system_info):
-            print_success("ChromaDB installed successfully")
-            return "chromadb"
-        
-        print_warning("ChromaDB installation failed, falling back to SQLite-vec...")
+        print_info("Auto-detect will prioritize local backends (SQLite-vec, ChromaDB)")
+        print_info("For production use, manually select Cloudflare backend.")
+
+        # For auto-detect, try SQLite-vec first (most reliable)
+        print_info("Trying SQLite-vec installation...")
         if install_storage_backend("sqlite_vec", system_info):
-            print_success("SQLite-vec installed successfully as fallback")
+            print_success("SQLite-vec installed successfully")
             return "sqlite_vec"
-        
-        print_error("Both storage backends failed to install")
+
+        print_warning("SQLite-vec installation failed, trying ChromaDB...")
+        if install_storage_backend("chromadb", system_info):
+            print_success("ChromaDB installed successfully as fallback")
+            return "chromadb"
+
+        print_error("All local storage backends failed to install")
+        print_info("Consider manually configuring Cloudflare backend for production use")
         return False
     
     return False
@@ -667,14 +1010,11 @@ def install_package(args):
     env = os.environ.copy()
 
     # Detect if pip is available
-    pip_available = False
-    try:
-        subprocess.check_call([sys.executable, '-m', 'pip', '--version'],
-                              stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL)
-        pip_available = True
-    except subprocess.SubprocessError:
-        pip_available = False
+    # Check if pip is available
+    pip_available, _ = run_command_safe(
+        [sys.executable, '-m', 'pip', '--version'],
+        silent=True
+    )
 
     # Detect if uv is available
     uv_path = shutil.which("uv")
@@ -696,13 +1036,30 @@ def install_package(args):
 
     # Choose and install storage backend
     chosen_backend = choose_storage_backend(system_info, gpu_info, args)
+
+    # Check if chromadb was chosen but flag not provided
+    if chosen_backend == "chromadb" and not args.with_chromadb:
+        print_warning("ChromaDB backend selected but --with-chromadb flag not provided")
+        print_info("ChromaDB requires heavy ML dependencies (~1-2GB).")
+        print_info("To use ChromaDB, run: python scripts/installation/install.py --with-chromadb")
+        print_info("Switching to SQLite-vec backend instead...")
+        chosen_backend = "sqlite_vec"
+
+    # ChromaDB automatically includes ML dependencies
+    if args.with_chromadb:
+        args.with_ml = True
+
     if chosen_backend == "auto_detect":
-        # Handle auto-detection case
-        actual_backend = install_storage_backend(chosen_backend, system_info)
-        if not actual_backend:
-            print_error("Failed to install any storage backend")
-            return False
-        chosen_backend = actual_backend
+        # Handle auto-detection case - prefer sqlite_vec if chromadb not explicitly requested
+        if not args.with_chromadb:
+            print_info("Auto-detection: Using SQLite-vec (lightweight option)")
+            chosen_backend = "sqlite_vec"
+        else:
+            actual_backend = install_storage_backend(chosen_backend, system_info)
+            if not actual_backend:
+                print_error("Failed to install any storage backend")
+                return False
+            chosen_backend = actual_backend
     else:
         # Install the chosen backend
         if not install_storage_backend(chosen_backend, system_info):
@@ -763,29 +1120,38 @@ def install_package(args):
             # First try to install without ML dependencies
             try:
                 cmd = installer_cmd + ['install', '--no-deps'] + install_mode + ['.']
-                print_info(f"Running: {' '.join(cmd)}")
-                subprocess.check_call(cmd, env=env)
+                success, _ = run_command_safe(
+                    cmd,
+                    success_msg="Package installed with --no-deps successfully",
+                    error_msg="Failed to install package with --no-deps",
+                    silent=False
+                )
+                if not success:
+                    raise Exception("Installation failed")
                 
                 # Install core dependencies except torch/sentence-transformers
                 print_info("Installing core dependencies except ML libraries...")
                 
                 # Create a list of dependencies to install
+                # Note: mcp and tokenizers are already in core dependencies
                 dependencies = [
-                    "mcp>=1.0.0,<2.0.0",
-                    "onnxruntime>=1.14.1"  # ONNX runtime is required
+                    "onnxruntime>=1.14.1"  # ONNX runtime for lightweight embeddings
                 ]
-                
-                # Add backend-specific dependencies
-                if chosen_backend == "sqlite_vec":
-                    dependencies.append("sqlite-vec>=0.1.0")
-                else:
+
+                # Add backend-specific dependencies (sqlite-vec, mcp, tokenizers are already in core)
+                if args.with_chromadb:
                     dependencies.append("chromadb==0.5.23")
-                    dependencies.append("tokenizers==0.20.3")
                 
                 # Install dependencies
-                subprocess.check_call(
-                    [sys.executable, '-m', 'pip', 'install'] + dependencies
+                cmd = [sys.executable, '-m', 'pip', 'install'] + dependencies
+                success, _ = run_command_safe(
+                    cmd,
+                    success_msg="Core dependencies installed successfully",
+                    error_msg="Failed to install core dependencies",
+                    silent=False
                 )
+                if not success:
+                    raise Exception("Core dependency installation failed")
                 
                 # Set environment variables for ONNX
                 print_info("Configuring to use ONNX runtime for inference without PyTorch...")
@@ -804,17 +1170,41 @@ def install_package(args):
                     print_info("The service will use ONNX runtime for inference instead")
                 
                 return True
-            except subprocess.SubprocessError as e:
+            except Exception as e:
                 print_error(f"Failed to install with ONNX approach: {e}")
                 # Fall through to try standard installation
         
-        # Standard installation
-        cmd = installer_cmd + ['install'] + install_mode + ['.']
-        print_info(f"Running: {' '.join(cmd)}")
-        subprocess.check_call(cmd, env=env)
-        print_success("MCP Memory Service installed successfully")
-        return True
-    except subprocess.SubprocessError as e:
+        # Standard installation with appropriate optional dependencies
+        install_target = ['.']
+
+        # Determine which optional dependencies to include based on backend and flags
+        if args.with_chromadb:
+            install_target = ['.[chromadb]']
+            print_info("Installing with ChromaDB backend support (includes ML dependencies)")
+        elif args.with_ml:
+            if chosen_backend == "sqlite_vec":
+                install_target = ['.[sqlite-ml]']
+                print_info("Installing SQLite-vec with full ML capabilities (torch + sentence-transformers)")
+            else:
+                install_target = ['.[ml]']
+                print_info("Installing with ML dependencies for semantic search and embeddings")
+        elif chosen_backend == "sqlite_vec":
+            install_target = ['.[sqlite]']
+            print_info("Installing SQLite-vec with lightweight ONNX embeddings (recommended)")
+            print_info("For full ML capabilities with SQLite-vec, use --with-ml flag")
+        else:
+            print_info("Installing lightweight version (no ML dependencies by default)")
+            print_info("For full functionality, use --with-ml flag or install with: pip install mcp-memory-service[ml]")
+
+        cmd = installer_cmd + ['install'] + install_mode + install_target
+        success, _ = run_command_safe(
+            cmd,
+            success_msg="MCP Memory Service installed successfully",
+            error_msg="Failed to install MCP Memory Service",
+            silent=False
+        )
+        return success
+    except Exception as e:
         print_error(f"Failed to install MCP Memory Service: {e}")
         
         # Special handling for macOS with compatibility issues
@@ -1141,6 +1531,80 @@ def verify_installation():
         print_error("MCP Memory Service is not installed correctly")
         return False
 
+def install_claude_hooks(args, system_info):
+    """Install Claude Code memory awareness hooks."""
+    print_step("5", "Installing Claude Code Memory Awareness Hooks")
+
+    try:
+        # Check if Claude Code is available
+        claude_available = shutil.which("claude") is not None
+        if not claude_available:
+            print_warning("Claude Code CLI not found")
+            print_info("You can install hooks manually later using:")
+            print_info("  cd claude-hooks && python install_hooks.py --basic")
+            return
+
+        print_info("Claude Code CLI detected")
+
+        # Use unified Python installer for cross-platform compatibility
+        claude_hooks_dir = Path(__file__).parent.parent.parent / "claude-hooks"
+        unified_installer = claude_hooks_dir / "install_hooks.py"
+
+        if not unified_installer.exists():
+            print_error("Unified hook installer not found at expected location")
+            print_info("Please ensure the unified installer is available:")
+            print_info(f"  Expected: {unified_installer}")
+            return
+
+        # Prepare installer command with appropriate options
+        version = get_package_version()
+        if args.install_natural_triggers:
+            print_info(f"Installing Natural Memory Triggers v{version}...")
+            installer_cmd = [sys.executable, str(unified_installer), "--natural-triggers"]
+        else:
+            print_info("Installing standard memory awareness hooks...")
+            installer_cmd = [sys.executable, str(unified_installer), "--basic"]
+
+        # Run the unified Python installer
+        print_info(f"Running unified hook installer: {unified_installer.name}")
+        result = subprocess.run(
+            installer_cmd,
+            cwd=str(claude_hooks_dir),
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode == 0:
+            print_success("Claude Code memory awareness hooks installed successfully")
+            if args.install_natural_triggers:
+                print_info(f"✅ Natural Memory Triggers v{version} enabled")
+                print_info("✅ Intelligent trigger detection with 85%+ accuracy")
+                print_info("✅ Multi-tier performance optimization")
+                print_info("✅ CLI management tools available")
+                print_info("")
+                print_info("Manage Natural Memory Triggers:")
+                print_info("  node ~/.claude/hooks/memory-mode-controller.js status")
+                print_info("  node ~/.claude/hooks/memory-mode-controller.js profile balanced")
+            else:
+                print_info("✅ Standard memory awareness hooks enabled")
+                print_info("✅ Session-start and session-end hooks active")
+        else:
+            print_warning("Hook installation completed with warnings")
+            if result.stdout:
+                print_info("Installer output:")
+                print_info(result.stdout)
+            if result.stderr:
+                print_warning("Installer warnings:")
+                print_warning(result.stderr)
+
+    except Exception as e:
+        print_warning(f"Failed to install hooks automatically: {e}")
+        print_info("You can install hooks manually later using the unified installer:")
+        print_info("  cd claude-hooks && python install_hooks.py --basic")
+        if args.install_natural_triggers:
+            print_info("For Natural Memory Triggers:")
+            print_info("  cd claude-hooks && python install_hooks.py --natural-triggers")
+
 def main():
     """Main installation function."""
     parser = argparse.ArgumentParser(description="Install MCP Memory Service")
@@ -1151,12 +1615,20 @@ def main():
                         help='Force compatible versions of PyTorch (2.0.1) and sentence-transformers (2.2.2)')
     parser.add_argument('--fallback-deps', action='store_true',
                         help='Use fallback versions of PyTorch (1.13.1) and sentence-transformers (2.2.2)')
-    parser.add_argument('--storage-backend', choices=['chromadb', 'sqlite_vec', 'auto_detect'],
-                        help='Choose storage backend: chromadb (default), sqlite_vec (lightweight), or auto_detect (try chromadb, fallback to sqlite_vec)')
+    parser.add_argument('--storage-backend', choices=['cloudflare', 'sqlite_vec', 'chromadb', 'auto_detect'],
+                        help='Choose storage backend: cloudflare (production), sqlite_vec (development), chromadb (team), or auto_detect')
     parser.add_argument('--skip-pytorch', action='store_true',
                         help='Skip PyTorch installation and use ONNX runtime with SQLite-vec backend instead')
     parser.add_argument('--use-homebrew-pytorch', action='store_true',
                         help='Use existing Homebrew PyTorch installation instead of pip version')
+    parser.add_argument('--install-hooks', action='store_true',
+                        help='Install Claude Code memory awareness hooks after main installation')
+    parser.add_argument('--install-natural-triggers', action='store_true',
+                        help='Install Natural Memory Triggers (requires Claude Code)')
+    parser.add_argument('--with-ml', action='store_true',
+                        help='Include ML dependencies (torch, sentence-transformers) for semantic search and embeddings')
+    parser.add_argument('--with-chromadb', action='store_true',
+                        help='Include ChromaDB backend support (automatically includes ML dependencies)')
     args = parser.parse_args()
     
     print_header("MCP Memory Service Installation")
@@ -1184,15 +1656,17 @@ def main():
                 torch_audio_version = "2.0.1"
                 st_version = "2.2.2"
                 
-            try:
-                subprocess.check_call([
-                    sys.executable, '-m', 'pip', 'install',
-                    f"torch=={torch_version}", f"torchvision=={torch_vision_version}", f"torchaudio=={torch_audio_version}",
-                    f"sentence-transformers=={st_version}"
-                ])
-                print_success("Compatible dependencies installed successfully")
-            except subprocess.SubprocessError as e:
-                print_error(f"Failed to install compatible dependencies: {e}")
+            cmd = [
+                sys.executable, '-m', 'pip', 'install',
+                f"torch=={torch_version}", f"torchvision=={torch_vision_version}", f"torchaudio=={torch_audio_version}",
+                f"sentence-transformers=={st_version}"
+            ]
+            success, _ = run_command_safe(
+                cmd,
+                success_msg="Compatible dependencies installed successfully",
+                error_msg="Failed to install compatible dependencies",
+                silent=False
+            )
         else:
             print_warning("--force-compatible-deps is only applicable for macOS with Intel CPUs")
     
@@ -1214,15 +1688,17 @@ def main():
             torch_audio_version = "0.13.1"
             st_version = "2.2.2"
             
-        try:
-            subprocess.check_call([
-                sys.executable, '-m', 'pip', 'install',
-                f"torch=={torch_version}", f"torchvision=={torch_vision_version}", f"torchaudio=={torch_audio_version}",
-                f"sentence-transformers=={st_version}"
-            ])
-            print_success("Fallback dependencies installed successfully")
-        except subprocess.SubprocessError as e:
-            print_error(f"Failed to install fallback dependencies: {e}")
+        cmd = [
+            sys.executable, '-m', 'pip', 'install',
+            f"torch=={torch_version}", f"torchvision=={torch_vision_version}", f"torchaudio=={torch_audio_version}",
+            f"sentence-transformers=={st_version}"
+        ]
+        success, _ = run_command_safe(
+            cmd,
+            success_msg="Fallback dependencies installed successfully",
+            error_msg="Failed to install fallback dependencies",
+            silent=False
+        )
     
     # Step 2: Check dependencies
     if not check_dependencies():
@@ -1277,8 +1753,22 @@ def main():
         print_info("✅ Using ONNX Runtime for inference")
         print_info("   • Compatible with Homebrew PyTorch")
         print_info("   • Reduced dependencies for better compatibility")
+
+    # Show ML dependencies status
+    if args.with_ml or args.with_chromadb:
+        print_info("✅ ML Dependencies Installed")
+        print_info("   • Full semantic search and embedding generation enabled")
+        print_info("   • PyTorch and sentence-transformers available")
+    else:
+        print_info("ℹ️  Lightweight Installation (No ML Dependencies)")
+        print_info("   • Basic functionality without semantic search")
+        print_info("   • To enable full features: pip install mcp-memory-service[ml]")
     
     print_info("For more information, see the README.md file")
+
+    # Install hooks if requested
+    if args.install_hooks or args.install_natural_triggers:
+        install_claude_hooks(args, system_info)
     
     # Print macOS Intel specific information if applicable
     if system_info["is_macos"] and system_info["is_x86"]:
@@ -1308,7 +1798,12 @@ def main():
         print_info("- If you have a Homebrew PyTorch installation, use: --use-homebrew-pytorch")
         print_info("- To completely skip PyTorch installation, use: --skip-pytorch")
         print_info("- To force the SQLite-vec backend, use: --storage-backend sqlite_vec")
+        print_info("- For lightweight installation without ML, use: (default behavior)")
+        print_info("- For full ML capabilities, use: --with-ml")
+        print_info("- For ChromaDB with ML, use: --with-chromadb")
         print_info("- For a quick test, try running: python test_memory.py")
+        print_info("- To install Claude Code hooks: --install-hooks")
+        print_info("- To install Natural Memory Triggers: --install-natural-triggers")
 
 if __name__ == "__main__":
     main()

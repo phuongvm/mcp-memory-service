@@ -44,7 +44,13 @@ export CLOUDFLARE_R2_BUCKET="mcp-memory-content"  # Optional
 
 # 4. Test and start
 python -m src.mcp_memory_service.server
+
+# Alternative startup methods:
+# uv run memory server          # Modern CLI (recommended)
+# python scripts/run_memory_server.py  # Direct script execution
 ```
+
+> **⚠️ Important**: Cloudflare backend uses Workers AI for embedding generation, so do NOT use `scripts/memory_offline.py` which sets offline mode. Use the standard startup methods above instead.
 
 ## Prerequisites
 
@@ -438,6 +444,134 @@ curl http://localhost:8000/api/stats
 - **Custom Embedding Models**: Support for other embedding models
 - **Enhanced Caching**: Multi-level caching strategy
 - **Batch Import Tools**: Efficient migration utilities
+
+## 🔄 Multi-Machine Bidirectional Sync
+
+**New in v6.13.7**: Cloudflare backend now supports seamless bidirectional sync between multiple machines, making it ideal for distributed teams or as a replacement for failed centralized servers.
+
+### Use Cases
+
+1. **Failed Server Recovery**: Replace a failed narrowbox/central server with Cloudflare
+2. **Multi-Machine Development**: Sync memories across multiple development machines
+3. **Team Collaboration**: Share memory context across team members
+4. **Backup Strategy**: Cloudflare as primary with local sqlite_vec as backup
+
+### Architecture
+
+```
+┌─────────────────┐    ┌─────────────────┐
+│   Machine A     │    │   Machine B     │
+│                 │    │                 │
+│ Claude Desktop  │    │ Claude Desktop  │
+│      ↕          │    │       ↕         │
+│ sqlite_vec      │    │ sqlite_vec      │
+│   (backup)      │    │   (backup)      │
+└─────────┬───────┘    └─────────┬───────┘
+          │                      │
+          └─────────┬────────────┘
+                    ↕
+          ┌─────────────────┐
+          │   Cloudflare    │
+          │                 │
+          │ D1 Database     │
+          │ Vectorize Index │
+          │ Workers AI      │
+          └─────────────────┘
+```
+
+### Setup Process
+
+#### 1. Initial Migration (from failed server)
+
+```bash
+# Export memories from existing machine
+memory export /path/to/export.json
+
+# Set up Cloudflare environment
+export CLOUDFLARE_API_TOKEN="your-token"
+export CLOUDFLARE_ACCOUNT_ID="your-account"
+export CLOUDFLARE_D1_DATABASE_ID="your-d1-id"
+export CLOUDFLARE_VECTORIZE_INDEX="mcp-memory-index"
+export MCP_MEMORY_STORAGE_BACKEND="cloudflare"
+
+# Import to Cloudflare
+python scripts/import_to_cloudflare.py /path/to/export.json
+```
+
+#### 2. Configure Each Machine
+
+**Claude Desktop Configuration** (`claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "/path/to/memory",
+      "args": ["server"],
+      "env": {
+        "MCP_MEMORY_STORAGE_BACKEND": "cloudflare",
+        "MCP_MEMORY_SQLITE_PATH": "/local/backup/path/sqlite_vec.db",
+        "CLOUDFLARE_API_TOKEN": "your-token",
+        "CLOUDFLARE_ACCOUNT_ID": "your-account",
+        "CLOUDFLARE_D1_DATABASE_ID": "your-d1-id",
+        "CLOUDFLARE_VECTORIZE_INDEX": "mcp-memory-index"
+      }
+    }
+  }
+}
+```
+
+#### 3. Verification Testing
+
+Test bidirectional sync by storing and retrieving memories from each machine:
+
+```python
+# Test script for verification
+import asyncio
+from mcp_memory_service.storage.cloudflare import CloudflareStorage
+
+async def test_sync():
+    storage = CloudflareStorage(...)
+    await storage.initialize()
+
+    # Store test memory
+    test_memory = Memory(content="Test from Machine A", tags=["sync-test"])
+    success, message = await storage.store(test_memory)
+
+    # Verify from other machine
+    results = await storage.retrieve("Test from Machine A")
+    print(f"Sync verified: {len(results)} results found")
+```
+
+### Important Notes
+
+- **v6.13.7 Required**: This version fixes the critical Vectorize ID length issue
+- **Breaking Change**: Vector IDs changed format from v6.13.6 (removed "mem_" prefix)
+- **Backup Strategy**: Local sqlite_vec files are maintained for fallback
+- **Migration Time**: Allow extra time for initial memory migration to Cloudflare
+
+### Troubleshooting Sync Issues
+
+#### Vector ID Length Error (Fixed in v6.13.7)
+```
+Error: "id too long; max is 64 bytes, got 68 bytes"
+```
+**Solution**: Update to v6.13.7 or later
+
+#### Environment Variable Issues
+**Problem**: Memories not syncing between machines
+**Solution**:
+- Verify identical environment variables on all machines
+- Check Claude Desktop configuration matches exactly
+- Restart Claude Desktop after config changes
+
+#### Sync Verification
+```bash
+# Check memory count on each machine
+memory status
+
+# Test cross-machine visibility
+memory retrieve "test query from other machine"
+```
 
 ## Support
 

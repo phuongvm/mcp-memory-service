@@ -30,9 +30,11 @@ graph TB
 
     subgraph "Storage Abstraction"
         ABS[Storage Interface]
-        CHROMA[ChromaDB Backend]
+        HYBRID[Hybrid Backend ⭐]
+        CLOUDFLARE[Cloudflare Backend]
         SQLITE[SQLite-vec Backend]
         REMOTE[HTTP Client Backend]
+        CHROMA[ChromaDB ⚠️ DEPRECATED]
     end
 
     subgraph "Infrastructure"
@@ -55,13 +57,18 @@ graph TB
     SRV --> EMB
     SRV --> ABS
     
-    ABS --> CHROMA
+    ABS --> HYBRID
+    ABS --> CLOUDFLARE
     ABS --> SQLITE
     ABS --> REMOTE
-    
-    CHROMA --> DB
+    ABS --> CHROMA
+
+    HYBRID --> SQLITE
+    HYBRID --> CLOUDFLARE
+    CLOUDFLARE --> DB
     SQLITE --> DB
     REMOTE --> HTTP
+    CHROMA --> DB
     
     DB --> FS
     SRV --> MDNS
@@ -92,31 +99,71 @@ Abstract interface that allows multiple storage backend implementations:
 #### Base Interface (`storage/base.py`)
 ```python
 class MemoryStorage(ABC):
-    async def initialize() -> None
-    async def store(memory: Memory) -> Tuple[bool, str]
-    async def retrieve(query: str, n_results: int) -> List[MemoryQueryResult]
-    async def search_by_tag(tags: List[str]) -> List[Memory]
-    async def delete(content_hash: str) -> Tuple[bool, str]
-    async def recall_memory(query: str, n_results: int) -> List[Memory]
+    async def initialize(self) -> None:
+        """Initialize the storage backend."""
+        pass
+
+    async def store(self, memory: Memory) -> Tuple[bool, str]:
+        """Store a memory object."""
+        pass
+
+    async def retrieve(self, query: str, n_results: int) -> List[MemoryQueryResult]:
+        """Retrieve memories based on semantic similarity."""
+        pass
+
+    async def search_by_tag(self, tags: List[str]) -> List[Memory]:
+        """Search memories by tags."""
+        pass
+
+    async def delete(self, content_hash: str) -> Tuple[bool, str]:
+        """Delete a memory by content hash."""
+        pass
+
+    async def recall_memory(self, query: str, n_results: int) -> List[Memory]:
+        """Recall memories using natural language time queries."""
+        pass
 ```
 
-#### ChromaDB Backend (`storage/chroma.py`)
-- Primary vector database backend
-- Sentence transformer embeddings
-- Persistent storage with automatic backups
-- Performance optimizations with caching
+#### Hybrid Backend (`storage/hybrid.py`) ⭐ **RECOMMENDED**
+- **Production default** - Best performance with cloud synchronization
+- **Primary storage**: SQLite-vec for ultra-fast local reads (~5ms)
+- **Secondary storage**: Cloudflare for multi-device persistence and cloud backup
+- **Background sync**: Zero user-facing latency with async operation queue
+- **Graceful degradation**: Works offline, automatically syncs when cloud available
+- **Capacity monitoring**: Tracks Cloudflare limits and provides warnings
+- **Use cases**: Production deployments, multi-device users, cloud-backed local performance
+
+#### Cloudflare Backend (`storage/cloudflare.py`)
+- Cloud-native storage using Cloudflare D1 (SQL) + Vectorize (vectors)
+- Global edge distribution for low-latency access worldwide
+- Serverless architecture with no infrastructure management
+- Automatic scaling and high availability
+- **Limits**: 10GB D1 database, 5M vectors in Vectorize
+- **Use cases**: Cloud-only deployments, serverless environments, no local storage
 
 #### SQLite-vec Backend (`storage/sqlite_vec.py`)
-- Lightweight alternative to ChromaDB
-- Native SQLite with vector extension
-- Better performance for smaller datasets
-- Lower memory footprint
+- Lightweight, fast local storage (5ms read latency)
+- Native SQLite with vec0 extension for vector similarity
+- ONNX Runtime embeddings (no PyTorch dependency)
+- Minimal memory footprint and dependencies
+- **Use cases**: Development, single-device deployments, or as primary in Hybrid backend
 
 #### HTTP Client Backend (`storage/http_client.py`)
-- Remote storage via HTTP API
-- Enables distributed deployments
-- Authentication support
-- Automatic retry logic
+- Remote storage via HTTP API for distributed architectures
+- Enables client-server deployments with centralized memory
+- Bearer token authentication with API key support
+- Automatic retry logic with exponential backoff
+- **Use cases**: Multi-client shared memory, remote MCP servers, load balancing
+
+#### ChromaDB Backend (`storage/chroma.py`) ⚠️ **DEPRECATED**
+- **Status**: Deprecated since v5.x, removal planned for v6.0.0
+- **Migration path**: Switch to Hybrid backend for production
+- Original vector database backend with sentence transformer embeddings
+- Heavy dependencies (PyTorch, sentence-transformers, ~2GB download)
+- Slower performance (15ms vs 5ms for SQLite-vec)
+- Higher memory footprint and complexity
+- **Why deprecated**: Hybrid backend provides better performance with cloud sync
+- **Historical only**: Not recommended for new deployments
 
 ### 3. Models Layer (`src/mcp_memory_service/models/`)
 
@@ -297,22 +344,42 @@ Automatic detection and optimization for different platforms:
 
 ## Deployment Architectures
 
-### Single User Desktop
-- Local ChromaDB/SQLite storage
-- Direct MCP protocol communication
-- Minimal resource usage
+### Production (Hybrid Backend) ⭐ **RECOMMENDED**
+- **Local performance**: SQLite-vec for 5ms read latency
+- **Cloud persistence**: Cloudflare for multi-device sync and backup
+- **Background sync**: Zero user-facing latency, async operation queue
+- **Offline capability**: Full functionality without internet, syncs when available
+- **Multi-device**: Access same memories across desktop, laptop, mobile
+- **Use cases**: Individual users, teams with personal instances, production deployments
+- **Setup**: `install.py --storage-backend hybrid` or set `MCP_MEMORY_STORAGE_BACKEND=hybrid`
 
-### Multi-Client Shared
-- Centralized HTTP server
-- Multiple clients via API
-- Authentication required
-- Shared memory pool
+### Cloud-Only (Cloudflare Backend)
+- **Serverless deployment**: No local storage, pure cloud architecture
+- **Global edge**: Cloudflare's worldwide network for low latency
+- **Automatic scaling**: Handles traffic spikes without configuration
+- **Use cases**: Serverless environments, ephemeral containers, CI/CD systems
+- **Limits**: 10GB D1 database, 5M vectors in Vectorize
+- **Setup**: `install.py --storage-backend cloudflare` or set `MCP_MEMORY_STORAGE_BACKEND=cloudflare`
 
-### Distributed Cloud
-- HTTP client backend
-- Load balancing support
-- Horizontal scaling
-- Cloud storage integration
+### Development (SQLite-vec Backend)
+- **Lightweight**: Minimal dependencies, fast startup
+- **Local-only**: No cloud connectivity required
+- **Fast iteration**: 5ms read latency, no sync overhead
+- **Use cases**: Development, testing, single-device prototypes
+- **Setup**: `install.py --storage-backend sqlite_vec` or set `MCP_MEMORY_STORAGE_BACKEND=sqlite_vec`
+
+### Multi-Client Shared (HTTP Server)
+- **Centralized HTTP server** with shared memory pool
+- **Multiple clients** connect via API (Claude Desktop, VS Code, custom apps)
+- **Authentication**: API key-based access control
+- **Use cases**: Team collaboration, shared organizational memory
+- **Setup**: Enable HTTP server with `MCP_HTTP_ENABLED=true`, clients use HTTP Client backend
+
+### Legacy (ChromaDB Backend) ⚠️ **NOT RECOMMENDED**
+- **Deprecated**: Removal planned for v6.0.0
+- **Migration required**: Switch to Hybrid backend
+- Heavy dependencies, slower performance (15ms vs 5ms)
+- Only for existing deployments with migration path to Hybrid
 
 ## Extension Points
 
@@ -336,21 +403,38 @@ Add new operations via tool registration:
 types.Tool(
     name="custom_operation",
     description="Custom memory operation",
-    inputSchema={...}
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "param1": {
+                "type": "string",
+                "description": "First parameter"
+            },
+            "param2": {
+                "type": "integer",
+                "description": "Second parameter",
+                "default": 0
+            }
+        },
+        "required": ["param1"],
+        "additionalProperties": false
+    }
 )
 ```
 
 ## Future Enhancements
 
-### Planned Features
-- Graph-based memory relationships
+### Planned Features (See Issue #91)
+- **WFGY Semantic Firewall** - Enhanced memory reliability with 16 failure mode detection/recovery
+- **Ontology Foundation Layer** (Phase 0) - Controlled vocabulary, taxonomy, knowledge graph
 - Automatic memory consolidation
 - Semantic clustering
 - Memory importance scoring
 - Cross-conversation threading
 
 ### Under Consideration
-- Agentic RAG for intelligent retrieval
+- **Agentic RAG** for intelligent retrieval (see Discussion #86)
+- **Graph-based memory relationships** (ontology pipeline integration)
 - Memory compression strategies
 - Federated learning from memories
 - Real-time collaboration features

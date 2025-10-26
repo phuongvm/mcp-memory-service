@@ -5,11 +5,12 @@ FROM python:3.12-slim
 # Build arguments for conditional features
 ARG SKIP_MODEL_DOWNLOAD=false
 ARG PLATFORM=linux/amd64
+ARG INSTALL_EXTRA="[sqlite]"
+ARG FORCE_CPU_PYTORCH=false
 
-# Optimized runtime environment
+# Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     MCP_MEMORY_STORAGE_BACKEND=sqlite_vec \
-    MCP_MEMORY_USE_ONNX=1 \
     MCP_MEMORY_SQLITE_PATH=/app/sqlite_db \
     MCP_MEMORY_BACKUPS_PATH=/app/backups \
     PYTHONPATH=/app/src \
@@ -18,6 +19,7 @@ ENV PYTHONUNBUFFERED=1 \
     ANONYMIZED_TELEMETRY=false \
     HF_HUB_DISABLE_TELEMETRY=1
 
+# Set the working directory
 WORKDIR /app
 
 # Minimal system packages with security updates
@@ -29,77 +31,67 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Copy essentials
+# Copy essential files
 COPY pyproject.toml .
 COPY uv.lock .
 COPY README.md .
-COPY scripts/install_uv.py .
+COPY scripts/installation/install_uv.py .
 
 # Install UV
 RUN python install_uv.py
 
-# Data dirs
+# Create directories for data persistence
 RUN mkdir -p /app/sqlite_db /app/backups
 
-# Copy source
+# Copy source code
 COPY src/ /app/src/
 COPY run_server.py ./
 
-# Optional utils
+# Copy utility scripts if they exist
 COPY scripts/utils/uv_wrapper.py ./uv_wrapper.py
 COPY scripts/utils/memory_wrapper_uv.py ./memory_wrapper_uv.py
 
-# Entrypoints
+# Copy Docker entrypoint scripts
 COPY tools/docker/docker-entrypoint.sh /usr/local/bin/
 COPY tools/docker/docker-entrypoint-persistent.sh /usr/local/bin/
 COPY tools/docker/docker-entrypoint-unified.sh /usr/local/bin/
 
-# Normalize line endings
-RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && \
-    sed -i 's/\r$//' /usr/local/bin/docker-entrypoint-persistent.sh && \
-    sed -i 's/\r$//' /usr/local/bin/docker-entrypoint-unified.sh
+# Install the package with UV (configurable dependency group)
+# Use CPU-only PyTorch by default to save disk space in CI/test environments
+RUN if [ "$FORCE_CPU_PYTORCH" = "true" ] || [ "$INSTALL_EXTRA" = "[sqlite]" ]; then \
+        echo "Installing CPU-only PyTorch to save disk space..."; \
+        python -m uv pip install torch --index-url https://download.pytorch.org/whl/cpu; \
+        python -m uv pip install -e .${INSTALL_EXTRA}; \
+    else \
+        python -m uv pip install -e .${INSTALL_EXTRA}; \
+    fi
 
-# Install minimal deps (no torch/CUDA); then install package in editable mode without deps
-RUN python -m uv pip install \
-    "mcp>=1.0.0,<2.0.0" \
-    "sqlite-vec>=0.1.0" \
-    "onnxruntime>=1.15.0" \
-    "tokenizers==0.20.3" \
-    "build>=0.10.0" \
-    "aiohttp>=3.8.0" \
-    "fastapi>=0.115.0" \
-    "uvicorn>=0.30.0" \
-    "python-multipart>=0.0.9" \
-    "sse-starlette>=2.1.0" \
-    "aiofiles>=23.2.1" \
-    "psutil>=5.9.0" \
-    "zeroconf>=0.130.0" \
-    "PyPDF2>=3.0.0" \
-    "chardet>=5.0.0" \
-    "click>=8.0.0" \
-    && python -m uv pip install -e . --no-deps
-
-# Prefetch ONNX model optionally
+# Conditionally pre-download ONNX models for lightweight embedding
 RUN if [ "$SKIP_MODEL_DOWNLOAD" != "true" ]; then \
         echo "Pre-downloading ONNX embedding models..." && \
         python -c "try:\
-            from mcp_memory_service.embeddings.onnx_embeddings import ONNXEmbeddingModel; \
-            print('Initializing ONNX embedding model...'); \
-            model = ONNXEmbeddingModel(); \
-            print('ONNX models cached successfully')\
+            import onnxruntime as ort; \
+            print('ONNX runtime available for lightweight embeddings'); \
+            print('ONNX models will be downloaded at runtime as needed')\
         except Exception as e:\
-            print(f'Warning: Could not pre-download ONNX models: {e}'); \
-            print('Models will be downloaded at runtime')" || echo "ONNX model download failed, continuing..."; \
+            print(f'Warning: ONNX runtime not available: {e}'); \
+            print('Embedding functionality may be limited')" || echo "ONNX check failed, continuing..."; \
     else \
-        echo "Skipping ONNX model download (SKIP_MODEL_DOWNLOAD=true)"; \
+        echo "Skipping model download (SKIP_MODEL_DOWNLOAD=true)"; \
     fi
 
-# Entrypoint perms
+# Configure stdio for MCP communication and make entrypoints executable
 RUN chmod a+rw /dev/stdin /dev/stdout /dev/stderr && \
     chmod +x /usr/local/bin/docker-entrypoint.sh && \
     chmod +x /usr/local/bin/docker-entrypoint-persistent.sh && \
     chmod +x /usr/local/bin/docker-entrypoint-unified.sh
 
+# Add volume mount points for data persistence
 VOLUME ["/app/sqlite_db", "/app/backups"]
+
+# Expose the port (if needed)
 EXPOSE 8000
+
+# Use the unified entrypoint script by default
+# Can be overridden with docker-entrypoint.sh for backward compatibility
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint-unified.sh"]

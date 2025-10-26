@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Memory Service - Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+</head>
+<body>
+    <!-- Main Application Container -->
+    <div id="app" class="app-container">
+
+        <!-- Header with Navigation -->
+        <header class="app-header">
+            <div class="header-content">
+                <div class="logo-section">
+                    <h1 class="app-title">🧠 MCP Memory</h1>
+                    <span id="versionBadge" class="version-badge">Loading...</span>
+                </div>
+
+                <!-- SVG Icon Definitions -->
+                <svg style="display: none;" aria-hidden="true">
+                    <defs>
+                        <symbol id="info-icon" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none"/>
+                            <path d="M12 8v.01M12 12v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </symbol>
+                    </defs>
+                </svg>
+
+                <!-- Quick Search Bar -->
+                <div class="search-section">
+                    <div class="search-container">
+                        <input type="text"
+                               id="quickSearch"
+                               class="search-input"
+                               placeholder="🔍 Search your memories..."
+                               autocomplete="off">
+                        <button class="search-btn" type="button" aria-label="Search">
+                            <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M21.71 20.29L18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a1 1 0 0 0 1.42-1.42zM11 18a7 7 0 1 1 7-7 7 7 0 0 1-7 7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="action-buttons">
+                    <button id="addMemoryBtn" class="btn btn-primary" title="Add New Memory">
+                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                        </svg>
+                        <span class="btn-text">Add Memory</span>
+                    </button>
+                    <button id="themeToggleBtn" class="btn btn-secondary" title="Toggle Dark Mode">
+                        <svg id="sunIcon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="5"/>
+                            <line x1="12" y1="1" x2="12" y2="3"/>
+                            <line x1="12" y1="21" x2="12" y2="23"/>
+                            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                            <line x1="1" y1="12" x2="3" y2="12"/>
+                            <line x1="21" y1="12" x2="23" y2="12"/>
+                            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                        </svg>
+                        <svg id="moonIcon" class="hidden" width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                        </svg>
+                    </button>
+                    <button id="settingsBtn" class="btn btn-secondary" title="Settings">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M12 1v6m0 6v10M1 12h6m6 0h10"/>
+                            <path d="M4.22 4.22l4.24 4.24m7.08 7.08l4.24 4.24M4.22 19.78l4.24-4.24m7.08-7.08l4.24-4.24"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Navigation -->
+        <nav class="main-nav">
+            <div class="nav-container">
+                <button class="nav-item active" data-view="dashboard">
+                    <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/>
+                    </svg>
+                    Dashboard
+                </button>
+                <button class="nav-item" data-view="search">
+                    <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M21.71 20.29L18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a1 1 0 0 0 1.42-1.42zM11 18a7 7 0 1 1 7-7 7 7 0 0 1-7 7z"/>
+                    </svg>
+                    Search
+                </button>
+                <button class="nav-item" data-view="browse">
+                <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/>
+                </svg>
+                Browse
+                </button>
+                <button class="nav-item" data-view="documents">
+                    <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"/>
+                    </svg>
+                    Documents
+                </button>
+                <button class="nav-item" data-view="manage">
+                    <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                    </svg>
+                    Manage
+                </button>
+                <button class="nav-item" data-view="analytics">
+                    <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"/>
+                    </svg>
+                    Analytics
+                </button>
+                <button class="nav-item" data-view="apiDocs">
+                    <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M14,17H7V15H14M17,13H7V11H17M17,9H7V7H17M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3Z"/>
+                    </svg>
+                    API Docs
+                </button>
+            </div>
+        </nav>
+
+        <!-- Sync Status Bar (Hybrid Mode Only) -->
+        <div id="syncStatusBar" class="sync-status-bar">
+            <div class="sync-status-content">
+                <div class="sync-status-indicator">
+                    <span id="syncStatusIcon">🔄</span>
+                    <span id="syncStatusText">Checking sync status...</span>
+                    <span id="syncStatusDetails" class="sync-details"></span>
+                </div>
+                <button id="forceSyncButton" class="sync-button" title="Manually trigger sync to Cloudflare">
+                    <span class="sync-button-icon">⚡</span>
+                    <span class="sync-button-text">Sync Now</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Dashboard View -->
+            <div id="dashboardView" class="view-container active">
+                <div class="dashboard-grid">
+                    <!-- Welcome Section -->
+                    <section class="welcome-card">
+                        <h2>Welcome to your Memory Dashboard</h2>
+                        <p>Manage your AI memories with semantic search, real-time updates, and intelligent organization.</p>
+                        <div class="quick-stats">
+                            <div class="stat-item">
+                                <span class="stat-number" id="totalMemories">—</span>
+                                <span class="stat-label">Total Memories</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-number" id="recentMemories">—</span>
+                                <span class="stat-label">This Week</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-number" id="uniqueTags">—</span>
+                                <span class="stat-label">Tags</span>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Recent Memories -->
+                    <section class="recent-memories">
+                        <h3>Recent Memories</h3>
+                        <div id="recentMemoriesList" class="memory-list">
+                            <!-- Dynamic content will be loaded here -->
+                        </div>
+                    </section>
+
+                    <!-- Quick Actions -->
+                    <section class="quick-actions">
+                        <h3>Quick Actions</h3>
+                        <div class="action-grid">
+                            <button class="action-card" data-action="quick-search">
+                                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M21.71 20.29L18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a1 1 0 0 0 1.42-1.42zM11 18a7 7 0 1 1 7-7 7 7 0 0 1-7 7z"/>
+                                </svg>
+                                <span>Advanced Search</span>
+                            </button>
+                            <button class="action-card" data-action="add-memory">
+                                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                                </svg>
+                                <span>Add Memory</span>
+                            </button>
+                            <button class="action-card" data-action="browse-tags">
+                                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/>
+                                </svg>
+                                <span>Browse Tags</span>
+                            </button>
+                            <button class="action-card" data-action="export-data">
+                                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"/>
+                                </svg>
+                                <span>Export Data</span>
+                            </button>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Search View -->
+            <div id="searchView" class="view-container">
+                <div class="search-layout">
+                    <!-- Advanced Search Panel -->
+                    <aside class="search-filters">
+                        <div class="filters-header">
+                            <h3>Search Filters
+                                <span class="tooltip" title="Filters work together: combine tags, dates, and types to narrow your search">
+                                    <svg width="16" height="16" fill="currentColor"><use href="#info-icon"/></svg>
+                                </span>
+                            </h3>
+                            <div class="mode-toggle-compact">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="liveSearchToggle" checked>
+                                    <span class="slider"></span>
+                                </label>
+                                <span class="tooltip" title="Toggle between live search (updates as you type) and manual search mode">
+                                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z" fill="currentColor"/>
+                                    </svg>
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- Search Mode Indicator -->
+                        <div class="search-mode-indicator">
+                            <span class="mode-status">
+                                <span id="searchModeText">Live Search</span> mode
+                            </span>
+                        </div>
+
+                        <div class="filter-section">
+                            <label for="tagFilter">Tags
+                                <span class="tooltip" title="Enter tags separated by commas (e.g., work, coding, important)">
+                                    <svg width="16" height="16" fill="currentColor"><use href="#info-icon"/></svg>
+                                </span>
+                            </label>
+                            <input type="text" id="tagFilter" placeholder="e.g., work, coding, important">
+                            <small class="help-text">Separate multiple tags with commas</small>
+                        </div>
+
+                        <div class="filter-section">
+                            <label for="dateFilter">Date Range
+                                <span class="tooltip" title="Filter memories by when they were created">
+                                    <svg width="16" height="16" fill="currentColor"><use href="#info-icon"/></svg>
+                                </span>
+                            </label>
+                            <select id="dateFilter">
+                                <option value="">All time</option>
+                                <option value="today">Today</option>
+                                <option value="yesterday">Yesterday</option>
+                                <option value="week">This week</option>
+                                <option value="month">This month</option>
+                                <option value="quarter">This quarter</option>
+                                <option value="year">This year</option>
+                            </select>
+                            <small class="help-text">Select a time period to filter memories</small>
+                        </div>
+
+                        <div class="filter-section">
+                            <label for="typeFilter">Content Type
+                                <span class="tooltip" title="Filter by the type of content stored">
+                                    <svg width="16" height="16" fill="currentColor"><use href="#info-icon"/></svg>
+                                </span>
+                            </label>
+                            <select id="typeFilter">
+                                <option value="">All types</option>
+                                <option value="note">Notes</option>
+                                <option value="code">Code</option>
+                                <option value="reference">References</option>
+                                <option value="idea">Ideas</option>
+                            </select>
+                            <small class="help-text">Choose the type of memories to show</small>
+                        </div>
+
+                        <!-- Filter Actions -->
+                        <div class="filter-actions">
+                            <button type="button" id="applyFiltersBtn" class="btn btn-primary">
+                                <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M21.71 20.29L18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a1 1 0 0 0 1.42-1.42zM11 18a7 7 0 1 1 7-7 7 7 0 0 1-7 7z"/>
+                                </svg>
+                                Search
+                            </button>
+                            <button type="button" id="clearFiltersBtn" class="btn btn-secondary">
+                                <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                                </svg>
+                                Clear All
+                            </button>
+                        </div>
+
+                        <!-- Active Filters Display -->
+                        <div id="activeFilters" class="active-filters" style="display: none;">
+                            <h4>Active Filters:</h4>
+                            <div id="activeFiltersList" class="filter-pills">
+                                <!-- Dynamic filter pills will be added here -->
+                            </div>
+                        </div>
+                    </aside>
+
+                    <!-- Search Results -->
+                    <div class="search-results">
+                        <div class="search-header">
+                            <h2>Search Results</h2>
+                            <div class="results-meta">
+                                <span id="resultsCount">0 results</span>
+                                <div class="view-options">
+                                    <button class="view-btn active" data-view="grid">Grid</button>
+                                    <button class="view-btn" data-view="list">List</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="searchResultsList" class="memory-grid">
+                            <!-- Dynamic search results will be loaded here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Documents View -->
+            <div id="documentsView" class="view-container">
+                <div class="documents-layout">
+                    <!-- Document Upload Section -->
+                    <section class="documents-section">
+                        <h2>📄 Document Ingestion</h2>
+                        <div class="upload-area">
+                            <div id="dropZone" class="drop-zone">
+                                <div class="drop-zone-content">
+                                    <svg width="48" height="48" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"/>
+                                    </svg>
+                                    <h3>Drag & drop files here</h3>
+                                    <p>or <button id="fileSelectBtn" class="link-button">browse to select files</button></p>
+                                    <p class="supported-formats">Supported formats: PDF, TXT, MD, JSON</p>
+                                    <input type="file" id="fileInput" multiple accept=".pdf,.txt,.md,.json" style="display: none;">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Upload Configuration -->
+                        <div class="upload-config">
+                            <div class="config-section">
+                                <label for="docTags">Tags (comma-separated)</label>
+                                <input type="text" id="docTags" placeholder="e.g., documentation, reference, manual" class="form-control">
+                            </div>
+                            <div class="config-row">
+                                <div class="config-section">
+                                    <label for="chunkSize">
+                                        Chunk Size: <span id="chunkSizeValue">1000</span> chars
+                                        <span class="info-icon" title="Click for chunking recommendations">ℹ️</span>
+                                    </label>
+                                    <input type="range" id="chunkSize" min="500" max="2000" value="1000" step="100" class="form-control">
+                                </div>
+                                <div class="config-section">
+                                    <label for="chunkOverlap">
+                                        Overlap: <span id="chunkOverlapValue">200</span> chars
+                                        <span class="info-icon info-icon-overlap" title="Click for overlap explanation">ℹ️</span>
+                                    </label>
+                                    <input type="range" id="chunkOverlap" min="0" max="500" value="200" step="50" class="form-control">
+                                </div>
+                            </div>
+
+                            <!-- Chunking Help Section (collapsible) -->
+                            <div id="chunkingHelpSection" class="chunking-help" style="display: none;">
+                                <div class="help-header">
+                                    <strong>📚 Chunking Configuration Guide</strong>
+                                    <button class="close-help" data-action="hideChunkingHelp">×</button>
+                                </div>
+                                <div class="help-content">
+                                    <p class="help-note">
+                                        <strong>Note:</strong> Actual chunk sizes may vary as the system respects paragraph boundaries
+                                        to maintain semantic coherence.
+                                    </p>
+
+                                    <div class="help-recommendations">
+                                        <div class="help-option">
+                                            <div class="help-option-header">
+                                                <strong>✅ Default (1000 chars, 200 overlap)</strong>
+                                                <span class="help-tag">Recommended</span>
+                                            </div>
+                                            <p><strong>Best for:</strong> Technical documentation, reference manuals, knowledge bases</p>
+                                            <p><strong>Why:</strong> Paragraph-aware chunking preserves complete thoughts and context</p>
+                                        </div>
+
+                                        <div class="help-option">
+                                            <div class="help-option-header">
+                                                <strong>🔍 Smaller Chunks (500 chars, 100 overlap)</strong>
+                                            </div>
+                                            <p><strong>Best for:</strong> Dense technical docs, code documentation, API references</p>
+                                            <p><strong>Trade-off:</strong> More granular retrieval but may split paragraphs more aggressively</p>
+                                        </div>
+
+                                        <div class="help-option">
+                                            <div class="help-option-header">
+                                                <strong>📖 Larger Chunks (2000 chars, 400 overlap)</strong>
+                                            </div>
+                                            <p><strong>Best for:</strong> Narrative documents, articles, blogs, long-form content</p>
+                                            <p><strong>Trade-off:</strong> Better context but less precise retrieval</p>
+                                        </div>
+                                    </div>
+
+                                    <div class="help-tips">
+                                        <strong>💡 Tips:</strong>
+                                        <ul>
+                                            <li><strong>Overlap</strong> helps maintain context across chunk boundaries</li>
+                                            <li><strong>Higher overlap</strong> = better continuity but more redundancy</li>
+                                            <li>Test different settings on a sample document to find optimal configuration</li>
+                                            <li>Chunks preserve complete sentences and paragraphs when possible</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Overlap Help Section (collapsible) -->
+                            <div id="overlapHelpSection" class="chunking-help overlap-help" style="display: none;">
+                                <div class="help-header">
+                                    <strong>🔗 Chunk Overlap Explained</strong>
+                                    <button class="close-help" data-action="hideOverlapHelp">×</button>
+                                </div>
+                                <div class="help-content">
+                                    <p class="help-note">
+                                        <strong>What is overlap?</strong> Overlap is the number of characters that are duplicated
+                                        between consecutive chunks. This helps maintain context across chunk boundaries.
+                                    </p>
+
+                                    <div class="help-example">
+                                        <strong>Visual Example:</strong>
+                                        <div class="overlap-diagram">
+                                            <div class="chunk-demo">
+                                                <span class="chunk-part unique">Chunk 1 unique content...</span>
+                                                <span class="chunk-part overlap">shared overlap region</span>
+                                            </div>
+                                            <div class="chunk-demo">
+                                                <span class="chunk-part overlap">shared overlap region</span>
+                                                <span class="chunk-part unique">Chunk 2 unique content...</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="help-recommendations">
+                                        <div class="help-option">
+                                            <div class="help-option-header">
+                                                <strong>🎯 No Overlap (0 chars)</strong>
+                                            </div>
+                                            <p><strong>Best for:</strong> Maximum storage efficiency, no redundancy needed</p>
+                                            <p><strong>Trade-off:</strong> Context may be lost at chunk boundaries</p>
+                                        </div>
+
+                                        <div class="help-option">
+                                            <div class="help-option-header">
+                                                <strong>✅ Medium Overlap (200 chars)</strong>
+                                                <span class="help-tag">Recommended</span>
+                                            </div>
+                                            <p><strong>Best for:</strong> Most documents - balances context and efficiency</p>
+                                            <p><strong>Why:</strong> Preserves 1-2 sentences of context across boundaries</p>
+                                        </div>
+
+                                        <div class="help-option">
+                                            <div class="help-option-header">
+                                                <strong>🔄 High Overlap (400+ chars)</strong>
+                                            </div>
+                                            <p><strong>Best for:</strong> Complex technical content requiring maximum context</p>
+                                            <p><strong>Trade-off:</strong> More storage and processing, higher redundancy</p>
+                                        </div>
+                                    </div>
+
+                                    <div class="help-tips">
+                                        <strong>💡 Guidelines:</strong>
+                                        <ul>
+                                            <li><strong>Rule of thumb:</strong> Overlap should be 15-25% of chunk size</li>
+                                            <li><strong>Small chunks (500)</strong> → Use 100-150 overlap</li>
+                                            <li><strong>Medium chunks (1000)</strong> → Use 200-250 overlap</li>
+                                            <li><strong>Large chunks (2000)</strong> → Use 400-500 overlap</li>
+                                            <li>Higher overlap helps with search accuracy but increases storage</li>
+                                            <li>Zero overlap is fine for well-structured documents with clear sections</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="config-section">
+                                <label for="memoryType">Memory Type</label>
+                                <select id="memoryType" class="form-control">
+                                    <option value="document">Document</option>
+                                    <option value="reference">Reference</option>
+                                    <option value="knowledge">Knowledge</option>
+                                    <option value="note">Note</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Upload Button -->
+                        <div class="upload-actions">
+                            <button id="uploadBtn" class="btn btn-primary" disabled>
+                                <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"/>
+                                </svg>
+                                Upload & Ingest
+                            </button>
+                        </div>
+                    </section>
+
+                    <!-- Upload Queue/History Section -->
+                    <section class="documents-section">
+                        <h2>📊 Upload History</h2>
+                        <div id="uploadHistory" class="upload-history">
+                            <div class="loading-spinner"></div>
+                            <p>Loading upload history...</p>
+                        </div>
+                    </section>
+
+                    <!-- Document Content Search Section -->
+                    <section class="documents-section">
+                        <h2>🔍 Search Ingested Content</h2>
+                        <p class="section-description">Search within your uploaded documents to verify content is indexed</p>
+                        <div class="doc-search-container">
+                            <input type="text"
+                                   id="docSearchInput"
+                                   class="search-input"
+                                   placeholder="Search for content within ingested documents...">
+                            <button id="docSearchBtn" class="btn btn-primary">Search Documents</button>
+                        </div>
+                        <div id="docSearchResults" class="doc-search-results" style="display: none;">
+                            <div class="search-results-header">
+                                <h3>Search Results</h3>
+                                <span id="docSearchCount" class="results-count">0 results</span>
+                            </div>
+                            <div id="docSearchResultsList" class="search-results-list">
+                                <!-- Results will be populated here -->
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Other views (Browse, Manage, Analytics) will be added in subsequent phases -->
+            <div id="browseView" class="view-container">
+                <div class="view-header">
+                    <h2>Browse by Tags</h2>
+                    <p>Explore your memories organized by tags</p>
+                </div>
+
+                <div class="browse-content">
+                    <div id="tagsCloudContainer" class="tags-cloud">
+                        <!-- Dynamic tags will be loaded here -->
+                    </div>
+
+                    <div id="taggedMemoriesContainer" class="tagged-memories" style="display: none;">
+                        <div class="section-header">
+                            <h3 id="selectedTagTitle">Memories tagged with: <span id="selectedTagName"></span></h3>
+                            <button id="clearTagFilter" class="btn btn-secondary">Show All Tags</button>
+                        </div>
+                        <div id="taggedMemoriesList" class="memory-grid">
+                            <!-- Filtered memories will be shown here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Manage View -->
+            <div id="manageView" class="view-container">
+                <div class="manage-layout">
+                    <!-- Bulk Operations Section -->
+                    <section class="manage-section">
+                        <h2>🧹 Bulk Operations</h2>
+                        <div class="bulk-ops-grid">
+                            <div class="bulk-op-card">
+                                <h3>Delete by Tag</h3>
+                                <p>Remove all memories with a specific tag</p>
+                                <div class="op-controls">
+                                    <select id="deleteTagSelect" class="form-control">
+                                        <option value="">Select tag...</option>
+                                    </select>
+                                    <button id="deleteByTagBtn" class="btn btn-danger">Delete</button>
+                                </div>
+                            </div>
+
+                            <div class="bulk-op-card">
+                                <h3>Cleanup Duplicates</h3>
+                                <p>Remove duplicate memories based on content</p>
+                                <div class="op-controls">
+                                    <button id="cleanupDuplicatesBtn" class="btn btn-warning">Run Cleanup</button>
+                                </div>
+                            </div>
+
+                            <div class="bulk-op-card">
+                                <h3>Delete by Date</h3>
+                                <p>Remove memories older than a specific date</p>
+                                <div class="op-controls">
+                                    <input type="date" id="deleteDateInput" class="form-control">
+                                    <button id="deleteByDateBtn" class="btn btn-danger">Delete</button>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Tag Management Section -->
+                    <section class="manage-section">
+                        <h2>🏷️ Tag Management</h2>
+                        <div id="tagManagementContainer">
+                            <div class="loading-spinner"></div>
+                            <p>Loading tag statistics...</p>
+                        </div>
+                    </section>
+
+                    <!-- System Operations Section -->
+                    <section class="manage-section">
+                        <h2>⚙️ System Maintenance</h2>
+                        <div class="system-ops-grid">
+                            <div class="system-op-card">
+                                <h3>Database Optimization</h3>
+                                <p>Optimize database performance</p>
+                                <button id="optimizeDbBtn" class="btn btn-secondary" disabled>Optimize DB</button>
+                            </div>
+
+                            <div class="system-op-card">
+                                <h3>Rebuild Search Index</h3>
+                                <p>Rebuild search indexes for better performance</p>
+                                <button id="rebuildIndexBtn" class="btn btn-secondary" disabled>Rebuild Index</button>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Analytics View -->
+            <div id="analyticsView" class="view-container">
+                <div class="analytics-layout">
+                    <!-- Key Metrics Cards -->
+                    <section class="analytics-section">
+                        <h2>📊 Key Metrics</h2>
+                        <div class="metrics-grid">
+                            <div class="metric-card">
+                                <div class="metric-value" id="analyticsTotalMemories">-</div>
+                                <div class="metric-label">Total Memories</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-value" id="analyticsThisWeek">-</div>
+                                <div class="metric-label">This Week</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-value" id="analyticsUniqueTags">-</div>
+                                <div class="metric-label">Unique Tags</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-value" id="analyticsDbSize">-</div>
+                                <div class="metric-label">Database Size</div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Charts Section -->
+                    <section class="analytics-section">
+                        <h2>📈 Trends & Charts</h2>
+                        <div class="charts-grid">
+                            <div class="chart-card">
+                                <h3>Memory Growth Over Time</h3>
+                                <div class="chart-controls">
+                                    <select id="growthPeriodSelect" class="form-control">
+                                        <option value="week">Last Week</option>
+                                        <option value="month" selected>Last Month</option>
+                                        <option value="quarter">Last Quarter</option>
+                                        <option value="year">Last Year</option>
+                                    </select>
+                                </div>
+                                <div id="memoryGrowthChart" class="chart-container">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading chart...</p>
+                                </div>
+                            </div>
+
+                            <div class="chart-card">
+                                <h3>Tag Usage Distribution</h3>
+                                <div id="tagUsageChart" class="chart-container">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading chart...</p>
+                                </div>
+                            </div>
+
+                            <div class="chart-card">
+                                <h3>Memory Types</h3>
+                                <div id="memoryTypesChart" class="chart-container">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading chart...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Detailed Analytics -->
+                    <section class="analytics-section">
+                        <h2>📋 Detailed Reports</h2>
+                        <div class="reports-grid">
+                            <div class="report-card">
+                                <h3>Top Tags</h3>
+                                <div id="topTagsList" class="report-content">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading...</p>
+                                </div>
+                            </div>
+
+                            <div class="report-card">
+                                <h3>Recent Activity</h3>
+                                <div id="recentActivityList" class="report-content">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- API Documentation View -->
+            <div id="apiDocsView" class="view-container">
+                <div class="api-docs-header">
+                    <h2>🔗 API Documentation</h2>
+                    <p>Comprehensive REST API endpoints for MCP Memory Service</p>
+                    <div class="api-docs-links">
+                        <a href="/api/docs" target="_blank" class="btn btn-primary">
+                            <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M14,17H7V15H14M17,13H7V11H17M17,9H7V7H17M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3Z"/>
+                            </svg>
+                            Interactive Swagger UI
+                        </a>
+                        <a href="/api/redoc" target="_blank" class="btn btn-secondary">
+                            <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M14,17H7V15H14M17,13H7V11H17M17,9H7V7H17M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3Z"/>
+                            </svg>
+                            ReDoc Documentation
+                        </a>
+                        <a href="/api-overview" target="_blank" class="btn btn-secondary">
+                            <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M11,16.5L18,9.5L16.59,8.09L11,13.67L7.91,10.59L6.5,12L11,16.5Z"/>
+                            </svg>
+                            API Overview Page
+                        </a>
+                    </div>
+                </div>
+
+                <div class="api-endpoints-grid">
+                    <!-- Memory Management -->
+                    <div class="endpoint-section">
+                        <h3>💾 Memory Management</h3>
+                        <div class="endpoint-list">
+                            <div class="endpoint-item">
+                                <span class="method post">POST</span>
+                                <span class="path">/api/memories</span>
+                                <span class="description">Store a new memory with automatic embedding generation</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="method get">GET</span>
+                                <span class="path">/api/memories</span>
+                                <span class="description">List all memories with pagination support</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="method get">GET</span>
+                                <span class="path">/api/memories/{content_hash}</span>
+                                <span class="description">Retrieve a specific memory by content hash</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="method delete">DELETE</span>
+                                <span class="path">/api/memories/{content_hash}</span>
+                                <span class="description">Delete a memory and its embeddings</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Search Operations -->
+                    <div class="endpoint-section">
+                        <h3>🔍 Search Operations</h3>
+                        <div class="endpoint-list">
+                            <div class="endpoint-item">
+                                <span class="method post">POST</span>
+                                <span class="path">/api/search</span>
+                                <span class="description">Semantic similarity search using embeddings</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="method post">POST</span>
+                                <span class="path">/api/search/by-tag</span>
+                                <span class="description">Search memories by tags (AND/OR logic)</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="method post">POST</span>
+                                <span class="path">/api/search/by-time</span>
+                                <span class="description">Natural language time-based queries</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="method get">GET</span>
+                                <span class="path">/api/search/similar/{content_hash}</span>
+                                <span class="description">Find memories similar to a specific one</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Real-time Events -->
+                    <div class="endpoint-section">
+                        <h3>📡 Real-time Events</h3>
+                        <div class="endpoint-list">
+                            <div class="endpoint-item">
+                                <span class="method get">GET</span>
+                                <span class="path">/api/events</span>
+                                <span class="description">Subscribe to real-time memory events stream</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="method get">GET</span>
+                                <span class="path">/api/events/stats</span>
+                                <span class="description">View SSE connection statistics</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Health & Status -->
+                    <div class="endpoint-section">
+                        <h3>🏥 Health & Status</h3>
+                        <div class="endpoint-list">
+                            <div class="endpoint-item">
+                                <span class="method get">GET</span>
+                                <span class="path">/api/health</span>
+                                <span class="description">Quick health check endpoint</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="method get">GET</span>
+                                <span class="path">/api/health/detailed</span>
+                                <span class="description">Detailed health with database statistics</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <h4>Documentation</h4>
+                    <ul class="footer-links">
+                        <li><a href="https://github.com/doobidoo/mcp-memory-service/wiki" target="_blank" rel="noopener">
+                            📚 Wiki Home
+                        </a></li>
+                        <li><a href="https://github.com/doobidoo/mcp-memory-service/wiki/07-TROUBLESHOOTING" target="_blank" rel="noopener">
+                            🔧 Troubleshooting Guide
+                        </a></li>
+                        <li><a href="https://github.com/doobidoo/mcp-memory-service/wiki/07-TROUBLESHOOTING#backend-configuration-issues" target="_blank" rel="noopener">
+                            ⚙️ Configuration Issues
+                        </a></li>
+                    </ul>
+                </div>
+
+                <div class="footer-section">
+                    <h4>Resources</h4>
+                    <ul class="footer-links">
+                        <li><a href="https://github.com/doobidoo/mcp-memory-service" target="_blank" rel="noopener">
+                            <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                            </svg>
+                            GitHub Repository
+                        </a></li>
+                        <li><a href="https://doobidoo.github.io" target="_blank" rel="noopener">
+                            🌐 Portfolio
+                        </a></li>
+                        <li><a href="/api/docs" target="_blank">
+                            📖 API Documentation
+                        </a></li>
+                    </ul>
+                </div>
+
+                <div class="footer-section">
+                    <h4>About</h4>
+                    <p class="footer-description">
+                        MCP Memory Service - Semantic memory management for AI assistants
+                    </p>
+                    <div class="footer-license">
+                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M14,17H7V15H14M17,13H7V11H17M17,9H7V7H17M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3Z"/>
+                        </svg>
+                        <a href="https://github.com/doobidoo/mcp-memory-service/blob/main/LICENSE" target="_blank" rel="noopener">
+                            Licensed under Apache 2.0
+                        </a>
+                    </div>
+                    <div class="footer-copyright">
+                        © 2024 Heinrich Krupp
+                    </div>
+                </div>
+            </div>
+        </footer>
+
+        <!-- Memory Detail Modal -->
+        <div id="memoryModal" class="modal-overlay">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="modalTitle">Memory Details</h3>
+                    <button class="modal-close" aria-label="Close">
+                        <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <div id="modalContent">
+                        <!-- Dynamic memory content -->
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="editMemoryBtn">Edit</button>
+                    <button class="btn btn-danger" id="deleteMemoryBtn">Delete</button>
+                    <button class="btn btn-primary" id="shareMemoryBtn">Share</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Add Memory Modal -->
+        <div id="addMemoryModal" class="modal-overlay">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Add New Memory</h3>
+                    <button class="modal-close" aria-label="Close">
+                        <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <form id="addMemoryForm">
+                        <div class="form-group">
+                            <label for="memoryContent">Content</label>
+                            <textarea id="memoryContent" rows="6" placeholder="Enter your memory content..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="memoryTags">Tags (comma-separated)</label>
+                            <input type="text" id="memoryTags" placeholder="e.g., coding, javascript, api">
+                        </div>
+                        <div class="form-group">
+                            <label for="memoryType">Type</label>
+                            <select id="memoryType">
+                                <option value="note">Note</option>
+                                <option value="code">Code</option>
+                                <option value="reference">Reference</option>
+                                <option value="idea">Idea</option>
+                            </select>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="cancelAddBtn">Cancel</button>
+                    <button class="btn btn-primary" id="saveMemoryBtn">Save Memory</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Modal -->
+        <div id="settingsModal" class="modal-overlay">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Settings</h3>
+                    <button class="modal-close" aria-label="Close">
+                        <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <form id="settingsForm">
+                        <h4 class="settings-section-heading">Preferences</h4>
+                        <div class="form-group">
+                            <label for="themeSelect">Theme</label>
+                            <select id="themeSelect">
+                                <option value="light">Light</option>
+                                <option value="dark">Dark</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="viewDensity">View Density</label>
+                            <select id="viewDensity">
+                                <option value="comfortable">Comfortable</option>
+                                <option value="compact">Compact</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="previewLines">Memory Preview Lines</label>
+                            <input type="number" id="previewLines" min="1" max="10" value="3">
+                        </div>
+
+                        <hr class="settings-divider">
+
+                        <h4 class="settings-section-heading" style="margin-bottom: var(--space-4);">System Information</h4>
+                        <div class="system-info">
+                            <div class="info-row">
+                                <span class="info-label">Version:</span>
+                                <span class="info-value" id="settingsVersion">Loading...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Storage Backend:</span>
+                                <span class="info-value" id="settingsBackend">Loading...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Primary Backend:</span>
+                                <span class="info-value" id="settingsPrimaryBackend">Loading...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Embedding Model:</span>
+                                <span class="info-value" id="settingsEmbeddingModel">Loading...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Embedding Dimensions:</span>
+                                <span class="info-value" id="settingsEmbeddingDim">Loading...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Database Size:</span>
+                                <span class="info-value" id="settingsDbSize">Loading...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Total Memories:</span>
+                                <span class="info-value" id="settingsTotalMemories">Loading...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Uptime:</span>
+                                <span class="info-value" id="settingsUptime">Loading...</span>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="cancelSettingsBtn">Cancel</button>
+                    <button class="btn btn-primary" id="saveSettingsBtn">Save Settings</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div id="loadingOverlay" class="loading-overlay">
+            <div class="loading-spinner"></div>
+            <p>Loading...</p>
+        </div>
+
+        <!-- Toast Notifications -->
+        <div id="toastContainer" class="toast-container"></div>
+    </div>
+
+    <!-- Connection Status Indicator -->
+    <div id="connectionStatus" class="connection-status">
+        <div class="status-indicator"></div>
+        <span class="status-text">Connected</span>
+    </div>
+
+    <!-- Memory Viewer Modal -->
+    <div id="memoryViewerModal" class="modal" style="display: none;">
+        <div class="modal-content memory-viewer-content">
+            <div class="modal-header">
+                <h2>📝 Document Memory Chunks</h2>
+                <button class="modal-close" data-action="closeMemoryViewer">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="document-info">
+                    <h3 id="memoryViewerFilename">Loading...</h3>
+                    <p id="memoryViewerStats" class="text-muted">0 chunks found</p>
+                </div>
+                <div class="memory-chunks-container">
+                    <div id="memoryChunksList" class="memory-chunks-list">
+                        <!-- Chunks will be populated here -->
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-action="closeMemoryViewer">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
