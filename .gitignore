@@ -153,3 +153,4 @@ package-lock.json
 *.db
 .mcp.json.disabled
 /nul
+/rules/

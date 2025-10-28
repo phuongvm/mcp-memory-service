@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Memory Service - OAuth Login</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #3b82f6;
+            --primary-dark: #2563eb;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --dark: #1e293b;
+            --gray: #64748b;
+            --light: #f8fafc;
+            --white: #ffffff;
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 500px;
+            width: 100%;
+        }
+
+        .card {
+            background: var(--white);
+            border-radius: 1rem;
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+        }
+
+        .card-header {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: var(--white);
+            padding: 2rem;
+            text-align: center;
+        }
+
+        .card-header h1 {
+            font-size: 1.75rem;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .card-header p {
+            opacity: 0.9;
+            font-size: 0.875rem;
+        }
+
+        .card-body {
+            padding: 2rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--dark);
+        }
+
+        input, select {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #e2e8f0;
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            transition: border-color 0.2s;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 0.875rem;
+            border: none;
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: var(--white);
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .btn-primary:disabled {
+            background: var(--gray);
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: var(--gray);
+            color: var(--white);
+            margin-top: 0.5rem;
+        }
+
+        .btn-secondary:hover {
+            background: #475569;
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: var(--white);
+            margin-top: 0.5rem;
+        }
+
+        .status-box {
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1.5rem;
+            display: none;
+        }
+
+        .status-box.success {
+            background: #d1fae5;
+            border: 2px solid var(--success);
+            color: #065f46;
+            display: block;
+        }
+
+        .status-box.error {
+            background: #fee2e2;
+            border: 2px solid var(--danger);
+            color: #991b1b;
+            display: block;
+        }
+
+        .status-box.info {
+            background: #dbeafe;
+            border: 2px solid var(--primary);
+            color: #1e40af;
+            display: block;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid var(--white);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .help-text {
+            font-size: 0.875rem;
+            color: var(--gray);
+            margin-top: 0.25rem;
+        }
+
+        .divider {
+            border: 0;
+            border-top: 1px solid #e2e8f0;
+            margin: 1.5rem 0;
+        }
+
+        .step {
+            display: none;
+        }
+
+        .step.active {
+            display: block;
+        }
+
+        .step-indicator {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .step-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #e2e8f0;
+        }
+
+        .step-dot.active {
+            background: var(--primary);
+        }
+
+        .token-display {
+            background: #f1f5f9;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.75rem;
+            word-break: break-all;
+            margin-top: 0.5rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .quick-start {
+            background: #fef3c7;
+            border: 2px solid var(--warning);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .quick-start h3 {
+            color: #92400e;
+            font-size: 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .quick-start p {
+            color: #78350f;
+            font-size: 0.875rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="card-header">
+                <h1>
+                    🧠 MCP Memory Service
+                </h1>
+                <p>OAuth 2.1 Authentication</p>
+            </div>
+
+            <div class="card-body">
+                <!-- Status Messages -->
+                <div id="statusBox" class="status-box"></div>
+
+                <!-- Quick Start Guide -->
+                <div id="quickStart" class="quick-start">
+                    <h3>⚡ Quick Start</h3>
+                    <p>New here? Click "Auto Register & Login" for instant access with a new OAuth client!</p>
+                </div>
+
+                <!-- Step Indicator -->
+                <div class="step-indicator">
+                    <div class="step-dot active" data-step="1"></div>
+                    <div class="step-dot" data-step="2"></div>
+                    <div class="step-dot" data-step="3"></div>
+                </div>
+
+                <!-- Step 1: Choose Method -->
+                <div id="step1" class="step active">
+                    <h2 style="margin-bottom: 1rem; color: var(--dark);">Choose Authentication Method</h2>
+
+                    <button class="btn btn-primary" onclick="startAutoFlow()">
+                        🚀 Auto Register & Login (Recommended)
+                    </button>
+
+                    <button class="btn btn-secondary" onclick="showManualFlow()">
+                        🔧 Manual OAuth Flow (Advanced)
+                    </button>
+
+                    <button class="btn btn-secondary" onclick="showApiKeyFlow()">
+                        🔑 API Key Authentication
+                    </button>
+                </div>
+
+                <!-- Step 2: Manual Client Registration -->
+                <div id="step2Manual" class="step">
+                    <h2 style="margin-bottom: 1rem; color: var(--dark);">Register OAuth Client</h2>
+
+                    <form id="registerForm" onsubmit="registerClient(event)">
+                        <div class="form-group">
+                            <label for="clientName">Client Name</label>
+                            <input type="text" id="clientName" placeholder="My Browser Client" required>
+                            <p class="help-text">A friendly name for your OAuth client</p>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="redirectUri">Redirect URI</label>
+                            <input type="url" id="redirectUri" value="http://localhost:3000/callback" required>
+                            <p class="help-text">Where to redirect after authorization (can be any local URL)</p>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary" id="registerBtn">
+                            Register Client
+                        </button>
+
+                        <button type="button" class="btn btn-secondary" onclick="goToStep(1)">
+                            ← Back
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Step 3: Authorization -->
+                <div id="step3" class="step">
+                    <h2 style="margin-bottom: 1rem; color: var(--dark);">Get Access Token</h2>
+
+                    <div id="clientInfo" style="display: none;">
+                        <div class="form-group">
+                            <label>Client ID</label>
+                            <div class="token-display" id="displayClientId"></div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Client Secret</label>
+                            <div class="token-display" id="displayClientSecret"></div>
+                        </div>
+                    </div>
+
+                    <button class="btn btn-primary" id="authorizeBtn" onclick="authorize()">
+                        <span id="authBtnText">Get Authorization Code</span>
+                        <span id="authBtnLoading" class="loading" style="display: none;"></span>
+                    </button>
+
+                    <div id="codeInput" style="display: none;">
+                        <hr class="divider">
+                        <div class="form-group">
+                            <label for="authCode">Authorization Code</label>
+                            <input type="text" id="authCode" placeholder="Paste the code from the redirect URL">
+                            <p class="help-text">After clicking authorize, copy the 'code' parameter from the URL you're redirected to</p>
+                        </div>
+
+                        <button class="btn btn-primary" onclick="exchangeToken()">
+                            Exchange for Access Token
+                        </button>
+                    </div>
+
+                    <button type="button" class="btn btn-secondary" onclick="goToStep(1)">
+                        ← Start Over
+                    </button>
+                </div>
+
+                <!-- Step 4: Success -->
+                <div id="step4" class="step">
+                    <h2 style="margin-bottom: 1rem; color: var(--dark);">✅ Authentication Successful!</h2>
+
+                    <div class="form-group">
+                        <label>Access Token</label>
+                        <div class="token-display" id="displayAccessToken"></div>
+                        <p class="help-text">Token is valid for <span id="tokenExpiry">60 minutes</span></p>
+                    </div>
+
+                    <button class="btn btn-primary" onclick="goToDashboard()">
+                        🎉 Open Dashboard
+                    </button>
+
+                    <button class="btn btn-secondary" onclick="testToken()">
+                        🧪 Test Token
+                    </button>
+
+                    <button class="btn btn-danger" onclick="logout()">
+                        🚪 Logout
+                    </button>
+                </div>
+
+                <!-- API Key Flow -->
+                <div id="stepApiKey" class="step">
+                    <h2 style="margin-bottom: 1rem; color: var(--dark);">API Key Authentication</h2>
+
+                    <div class="form-group">
+                        <label for="apiKeyInput">API Key</label>
+                        <input type="password" id="apiKeyInput" placeholder="Enter your API key">
+                        <p class="help-text">Find your API key in the .env file (MCP_API_KEY)</p>
+                    </div>
+
+                    <button class="btn btn-primary" onclick="loginWithApiKey()">
+                        Login with API Key
+                    </button>
+
+                    <button type="button" class="btn btn-secondary" onclick="goToStep(1)">
+                        ← Back
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration - Update this to match your server
+        const SERVER_URL = window.location.origin; // Uses current domain
+        const STORAGE_KEY = 'mcp_oauth_data';
+
+        // State management
+        let oauthData = {
+            clientId: null,
+            clientSecret: null,
+            redirectUri: null,
+            accessToken: null,
+            expiresIn: null,
+            tokenType: null
+        };
+
+        // Load saved data and auth config on startup
+        window.onload = async function() {
+            await loadAuthConfig();
+            loadSavedData();
+        };
+
+        async function loadAuthConfig() {
+            try {
+                const response = await fetch(`${SERVER_URL}/api/auth/config`);
+                if (!response.ok) {
+                    console.error('Failed to load auth config');
+                    return;
+                }
+                
+                const config = await response.json();
+                console.log('Auth config loaded:', config);
+                
+                // Hide/show buttons based on available methods
+                const oauthAutoBtn = document.querySelector('button[onclick="startAutoFlow()"]');
+                const oauthManualBtn = document.querySelector('button[onclick="showManualFlow()"]');
+                const apiKeyBtn = document.querySelector('button[onclick="showApiKeyFlow()"]');
+                
+                let hasOAuthAuto = false;
+                let hasOAuthManual = false;
+                let hasApiKey = false;
+                let recommendedMethod = null;
+                
+                config.available_methods.forEach(method => {
+                    if (method.id === 'oauth_auto' && method.enabled) {
+                        hasOAuthAuto = true;
+                        if (method.recommended) recommendedMethod = 'oauth_auto';
+                    }
+                    if (method.id === 'oauth_manual' && method.enabled) {
+                        hasOAuthManual = true;
+                        if (method.recommended) recommendedMethod = 'oauth_manual';
+                    }
+                    if (method.id === 'api_key' && method.enabled) {
+                        hasApiKey = true;
+                        if (method.recommended) recommendedMethod = 'api_key';
+                    }
+                });
+                
+                // Hide disabled methods
+                if (!hasOAuthAuto && oauthAutoBtn) {
+                    oauthAutoBtn.style.display = 'none';
+                }
+                if (!hasOAuthManual && oauthManualBtn) {
+                    oauthManualBtn.style.display = 'none';
+                }
+                if (!hasApiKey && apiKeyBtn) {
+                    apiKeyBtn.style.display = 'none';
+                }
+                
+                // Update button styles to show recommended method
+                if (recommendedMethod === 'oauth_auto' && oauthAutoBtn) {
+                    // Already has "Recommended" in text
+                } else if (recommendedMethod === 'api_key' && apiKeyBtn) {
+                    apiKeyBtn.classList.remove('btn-secondary');
+                    apiKeyBtn.classList.add('btn-primary');
+                    apiKeyBtn.innerHTML = '🔑 API Key Authentication (Recommended)';
+                }
+                
+                // Update quick start message if OAuth is disabled
+                const quickStart = document.getElementById('quickStart');
+                if (!hasOAuthAuto && !hasOAuthManual && hasApiKey) {
+                    quickStart.innerHTML = `
+                        <h3>🔒 Secure Mode</h3>
+                        <p>OAuth registration is disabled. Use your API key to authenticate.</p>
+                    `;
+                }
+                
+                // If no auth methods available, show error
+                if (!hasOAuthAuto && !hasOAuthManual && !hasApiKey) {
+                    showStatus('⚠️ No authentication methods are enabled. Please contact your administrator.', 'error');
+                    document.querySelectorAll('.btn').forEach(btn => btn.style.display = 'none');
+                }
+                
+            } catch (error) {
+                console.error('Error loading auth config:', error);
+                // Continue with all options visible if config fails to load
+            }
+        }
+
+        function loadSavedData() {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                try {
+                    oauthData = JSON.parse(saved);
+                    if (oauthData.accessToken) {
+                        showStatus('You already have a valid token! Click "Open Dashboard" below.', 'success');
+                        goToStep(4);
+                        updateTokenDisplay();
+                    }
+                } catch (e) {
+                    console.error('Failed to load saved data:', e);
+                }
+            }
+        }
+
+        function saveData() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(oauthData));
+        }
+
+        function showStatus(message, type = 'info') {
+            const box = document.getElementById('statusBox');
+            box.textContent = message;
+            box.className = `status-box ${type}`;
+        }
+
+        function hideStatus() {
+            document.getElementById('statusBox').className = 'status-box';
+        }
+
+        function goToStep(stepNum) {
+            // Hide all steps
+            document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+
+            // Show target step
+            if (stepNum === 1) {
+                document.getElementById('step1').classList.add('active');
+            } else if (stepNum === 2) {
+                document.getElementById('step2Manual').classList.add('active');
+            } else if (stepNum === 3) {
+                document.getElementById('step3').classList.add('active');
+            } else if (stepNum === 4) {
+                document.getElementById('step4').classList.add('active');
+            }
+
+            // Update step indicator
+            document.querySelectorAll('.step-dot').forEach((dot, i) => {
+                if (i < stepNum) {
+                    dot.classList.add('active');
+                } else {
+                    dot.classList.remove('active');
+                }
+            });
+
+            hideStatus();
+        }
+
+        // Auto Flow: Register + Authorize + Exchange in one go
+        async function startAutoFlow() {
+            showStatus('Starting automatic registration and login...', 'info');
+            document.getElementById('quickStart').style.display = 'none';
+
+            try {
+                // Step 1: Auto-register client
+                const registerResponse = await fetch(`${SERVER_URL}/oauth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        client_name: `Browser Client ${Date.now()}`,
+                        redirect_uris: [`${window.location.origin}/oauth-callback.html`],
+                        grant_types: ['authorization_code'],
+                        response_types: ['code'],
+                        scope: 'read write'
+                    })
+                });
+
+                if (!registerResponse.ok) {
+                    const error = await registerResponse.json();
+                    throw new Error(error.error_description || 'Registration failed');
+                }
+
+                const clientData = await registerResponse.json();
+                oauthData.clientId = clientData.client_id;
+                oauthData.clientSecret = clientData.client_secret;
+                oauthData.redirectUri = clientData.redirect_uris[0];
+                saveData();
+
+                showStatus('✅ Client registered! Getting authorization...', 'success');
+
+                // Step 2: Redirect to authorization endpoint
+                setTimeout(() => {
+                    const authUrl = buildAuthUrl();
+                    window.location.href = authUrl;
+                }, 1500);
+
+            } catch (error) {
+                showStatus(`❌ Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Manual Flow
+        function showManualFlow() {
+            goToStep(2);
+        }
+
+        function showApiKeyFlow() {
+            document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+            document.getElementById('stepApiKey').classList.add('active');
+        }
+
+        async function registerClient(event) {
+            event.preventDefault();
+            const btn = document.getElementById('registerBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> Registering...';
+
+            try {
+                const response = await fetch(`${SERVER_URL}/oauth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        client_name: document.getElementById('clientName').value,
+                        redirect_uris: [document.getElementById('redirectUri').value],
+                        grant_types: ['authorization_code'],
+                        response_types: ['code'],
+                        scope: 'read write'
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error_description || 'Registration failed');
+                }
+
+                const data = await response.json();
+                oauthData.clientId = data.client_id;
+                oauthData.clientSecret = data.client_secret;
+                oauthData.redirectUri = data.redirect_uris[0];
+                saveData();
+
+                showStatus('✅ Client registered successfully!', 'success');
+                goToStep(3);
+                updateClientDisplay();
+
+            } catch (error) {
+                showStatus(`❌ Error: ${error.message}`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Register Client';
+            }
+        }
+
+        function updateClientDisplay() {
+            document.getElementById('displayClientId').textContent = oauthData.clientId;
+            document.getElementById('displayClientSecret').textContent = oauthData.clientSecret;
+            document.getElementById('clientInfo').style.display = 'block';
+        }
+
+        function buildAuthUrl() {
+            const params = new URLSearchParams({
+                response_type: 'code',
+                client_id: oauthData.clientId,
+                redirect_uri: oauthData.redirectUri,
+                scope: 'read write',
+                state: Math.random().toString(36).substring(7)
+            });
+            return `${SERVER_URL}/oauth/authorize?${params.toString()}`;
+        }
+
+        function authorize() {
+            if (!oauthData.clientId) {
+                showStatus('❌ Please register a client first', 'error');
+                return;
+            }
+
+            showStatus('🔄 Redirecting to authorization endpoint...', 'info');
+
+            // Show code input for manual flow
+            document.getElementById('codeInput').style.display = 'block';
+
+            setTimeout(() => {
+                window.open(buildAuthUrl(), '_blank');
+                showStatus('📋 Copy the "code" parameter from the redirect URL and paste it below', 'info');
+            }, 1000);
+        }
+
+        async function exchangeToken() {
+            const code = document.getElementById('authCode').value.trim();
+            if (!code) {
+                showStatus('❌ Please enter the authorization code', 'error');
+                return;
+            }
+
+            showStatus('🔄 Exchanging code for access token...', 'info');
+
+            try {
+                const credentials = btoa(`${oauthData.clientId}:${oauthData.clientSecret}`);
+                const response = await fetch(`${SERVER_URL}/oauth/token`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Authorization': `Basic ${credentials}`
+                    },
+                    body: new URLSearchParams({
+                        grant_type: 'authorization_code',
+                        code: code,
+                        redirect_uri: oauthData.redirectUri
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error_description || 'Token exchange failed');
+                }
+
+                const data = await response.json();
+                oauthData.accessToken = data.access_token;
+                oauthData.expiresIn = data.expires_in;
+                oauthData.tokenType = data.token_type;
+                saveData();
+
+                showStatus('✅ Access token received!', 'success');
+                goToStep(4);
+                updateTokenDisplay();
+
+            } catch (error) {
+                showStatus(`❌ Error: ${error.message}`, 'error');
+            }
+        }
+
+        function updateTokenDisplay() {
+            document.getElementById('displayAccessToken').textContent = oauthData.accessToken;
+            const minutes = Math.floor(oauthData.expiresIn / 60);
+            document.getElementById('tokenExpiry').textContent = `${minutes} minutes`;
+        }
+
+        async function testToken() {
+            showStatus('🧪 Testing token...', 'info');
+
+            try {
+                const response = await fetch(`${SERVER_URL}/api/health/detailed`, {
+                    headers: {
+                        'Authorization': `Bearer ${oauthData.accessToken}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+                showStatus(`✅ Token is valid! Server version: ${data.version}`, 'success');
+
+            } catch (error) {
+                showStatus(`❌ Token test failed: ${error.message}`, 'error');
+            }
+        }
+
+        function goToDashboard() {
+            // Store token for the dashboard to use
+            sessionStorage.setItem('mcp_access_token', oauthData.accessToken);
+            window.location.href = '/';
+        }
+
+        async function loginWithApiKey() {
+            const apiKey = document.getElementById('apiKeyInput').value.trim();
+            if (!apiKey) {
+                showStatus('❌ Please enter an API key', 'error');
+                return;
+            }
+
+            showStatus('🔄 Testing API key...', 'info');
+
+            try {
+                const response = await fetch(`${SERVER_URL}/api/health`, {
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Invalid API key');
+                }
+
+                // API key is valid - store it as a token
+                oauthData.accessToken = apiKey;
+                oauthData.tokenType = 'Bearer';
+                oauthData.expiresIn = 999999; // API keys don't expire
+                saveData();
+
+                showStatus('✅ API key is valid!', 'success');
+                sessionStorage.setItem('mcp_access_token', apiKey);
+
+                setTimeout(() => {
+                    window.location.href = '/';
+                }, 1500);
+
+            } catch (error) {
+                showStatus(`❌ Invalid API key`, 'error');
+            }
+        }
+
+        function logout() {
+            if (confirm('Are you sure you want to logout? This will delete your saved credentials.')) {
+                localStorage.removeItem(STORAGE_KEY);
+                sessionStorage.removeItem('mcp_access_token');
+                oauthData = {
+                    clientId: null,
+                    clientSecret: null,
+                    redirectUri: null,
+                    accessToken: null,
+                    expiresIn: null,
+                    tokenType: null
+                };
+                showStatus('✅ Logged out successfully', 'success');
+                goToStep(1);
+                document.getElementById('quickStart').style.display = 'block';
+            }
+        }
+
+        // Handle OAuth callback if we're on the callback page
+        if (window.location.search.includes('code=')) {
+            const params = new URLSearchParams(window.location.search);
+            const code = params.get('code');
+            if (code) {
+                loadSavedData();
+                document.getElementById('authCode').value = code;
+                goToStep(3);
+                document.getElementById('codeInput').style.display = 'block';
+                showStatus('✅ Authorization code received! Click "Exchange for Access Token"', 'success');
+            }
+        }
+    </script>
+</body>
+</html>

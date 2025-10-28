@@ -239,7 +239,7 @@ class MemoryService:
         self,
         query: str,
         n_results: int = 5,
-        min_similarity: float = 0.0
+        min_similarity: Optional[float] = None
     ) -> Dict[str, Union[List[MemoryResult], str]]:
         """
         Retrieve memories based on semantic similarity to a query.
@@ -247,42 +247,71 @@ class MemoryService:
         Args:
             query: Search query for semantic similarity
             n_results: Maximum number of results to return
-            min_similarity: Minimum similarity score threshold
+            min_similarity: Minimum similarity score threshold (0.0-1.0). User-configurable via UI.
 
         Returns:
-            Dictionary with retrieved memories and metadata
+            Dictionary with retrieved memories and metadata in API-compatible format
         """
         try:
+            import time
+            start_time = time.time()
+            
+            # Use user-provided threshold or default to 0.0 (no filtering)
+            # This allows UI to control quality vs quantity tradeoff
+            if min_similarity is None:
+                min_similarity = 0.0
+            
             # Search for memories
-            results = await self.storage.search(
+            storage_results = await self.storage.search(
                 query=query,
-                n_results=n_results,
-                min_similarity=min_similarity
+                n_results=n_results
             )
 
-            # Format results
-            memories = []
-            for result in results:
-                memories.append({
+            # Format results and apply similarity threshold
+            results = []
+            for result in storage_results:
+                # Apply minimum similarity filter (handle None similarity_score values)
+                if result.similarity_score is not None and result.similarity_score < min_similarity:
+                    continue
+                
+                # Format in API-compatible structure (matching search_similar format)
+                memory_response = {
                     "content": result.memory.content,
                     "content_hash": result.memory.content_hash,
-                    "tags": result.memory.metadata.tags,
-                    "memory_type": result.memory.metadata.memory_type,
-                    "created_at": result.memory.metadata.created_at_iso,
-                    "similarity_score": result.similarity_score
-                })
+                    "tags": result.memory.tags,
+                    "memory_type": result.memory.memory_type,
+                    "created_at": result.memory.created_at,
+                    "created_at_iso": result.memory.created_at_iso,
+                    "updated_at": result.memory.updated_at,
+                    "updated_at_iso": result.memory.updated_at_iso,
+                    "metadata": result.memory.metadata
+                }
+                
+                search_result = {
+                    "memory": memory_response,
+                    "similarity_score": result.similarity_score,
+                    "relevance_reason": f"Semantic similarity: {result.similarity_score:.3f}" if result.similarity_score else None
+                }
+                results.append(search_result)
+
+            processing_time = (time.time() - start_time) * 1000
 
             return {
-                "memories": memories,
+                "results": results,
+                "total_found": len(results),
                 "query": query,
-                "total_results": len(memories)
+                "search_type": "semantic",
+                "processing_time_ms": processing_time
             }
 
         except Exception as e:
             logger.error(f"Error retrieving memories: {e}")
             return {
-                "memories": [],
+                "results": [],
+                "total_found": 0,
                 "query": query,
+                "search_type": "semantic",
+                "processing_time_ms": 0,
                 "error": f"Failed to retrieve memories: {str(e)}"
             }
 
@@ -299,42 +328,65 @@ class MemoryService:
             match_all: If True, memory must have ALL tags; if False, ANY tag
 
         Returns:
-            Dictionary with matching memories
+            Dictionary with matching memories in API-compatible format
         """
         try:
+            import time
+            start_time = time.time()
+            
             # Normalize tags to list
             if isinstance(tags, str):
                 tags = [tags]
 
+            # Convert match_all (boolean) to operation (string) for storage layer
+            operation = "AND" if match_all else "OR"
+            
             # Search by tags
             memories = await self.storage.search_by_tags(
                 tags=tags,
-                match_all=match_all
+                operation=operation
             )
 
-            # Format results
+            # Format results in API-compatible structure
             results = []
             for memory in memories:
-                results.append({
+                memory_response = {
                     "content": memory.content,
                     "content_hash": memory.content_hash,
-                    "tags": memory.metadata.tags,
-                    "memory_type": memory.metadata.memory_type,
-                    "created_at": memory.metadata.created_at_iso
-                })
+                    "tags": memory.tags,
+                    "memory_type": memory.memory_type,
+                    "created_at": memory.created_at,
+                    "created_at_iso": memory.created_at_iso,
+                    "updated_at": memory.updated_at,
+                    "updated_at_iso": memory.updated_at_iso,
+                    "metadata": memory.metadata
+                }
+                
+                search_result = {
+                    "memory": memory_response,
+                    "similarity_score": None,
+                    "relevance_reason": f"Matches tag filter: {', '.join(tags)}"
+                }
+                results.append(search_result)
+
+            processing_time = (time.time() - start_time) * 1000
 
             return {
-                "memories": results,
-                "search_tags": tags,
-                "match_all": match_all,
-                "total_results": len(results)
+                "results": results,
+                "total_found": len(results),
+                "query": f"Tags: {', '.join(tags)} ({'ALL' if match_all else 'ANY'})",
+                "search_type": "tag",
+                "processing_time_ms": processing_time
             }
 
         except Exception as e:
             logger.error(f"Error searching by tags: {e}")
             return {
-                "memories": [],
-                "search_tags": tags,
+                "results": [],
+                "total_found": 0,
+                "query": f"Tags: {', '.join(tags) if isinstance(tags, list) else tags}",
+                "search_type": "tag",
+                "processing_time_ms": 0,
                 "error": f"Failed to search by tags: {str(e)}"
             }
 
@@ -614,6 +666,7 @@ class MemoryService:
                 "total_found": 0,
                 "query": f"Similar to content_hash: {content_hash}",
                 "search_type": "similar",
+                "processing_time_ms": 0,
                 "error": f"Failed to search similar memories: {str(e)}"
             }
 
@@ -709,6 +762,7 @@ class MemoryService:
                 "total_found": 0,
                 "query": query,
                 "search_type": "time",
+                "processing_time_ms": 0,
                 "error": f"Failed to search by time: {str(e)}"
             }
     

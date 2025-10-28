@@ -80,6 +80,10 @@ class MemoryDashboard {
         this.documentsListenersSetup = false;
         this.processingMode = 'batch'; // 'batch' or 'individual'
 
+        // Search configuration
+        this.similarityThreshold = 0.30; // Default threshold
+        this.tagMatchAll = false; // Default to "match any" (OR logic)
+
         // Bind methods
         this.handleSearch = this.handleSearch.bind(this);
         this.handleQuickSearch = this.handleQuickSearch.bind(this);
@@ -196,6 +200,42 @@ class MemoryDashboard {
         document.getElementById('dateFilter')?.addEventListener('change', this.handleFilterChange.bind(this));
         document.getElementById('typeFilter')?.addEventListener('change', this.handleFilterChange.bind(this));
 
+        // Similarity threshold slider
+        const similaritySlider = document.getElementById('similarityThreshold');
+        const similarityValue = document.getElementById('similarityThresholdValue');
+        if (similaritySlider && similarityValue) {
+            similaritySlider.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                this.similarityThreshold = value;
+                similarityValue.textContent = value.toFixed(2);
+                // Trigger search if live search is enabled
+                if (this.liveSearchEnabled && this.currentView === 'search') {
+                    const searchInput = document.getElementById('searchInput');
+                    if (searchInput && searchInput.value.trim()) {
+                        this.handleFilterChange();
+                    }
+                }
+            });
+        }
+
+        // Tag match mode radio buttons
+        const tagMatchAny = document.getElementById('tagMatchAny');
+        const tagMatchAll = document.getElementById('tagMatchAll');
+        if (tagMatchAny && tagMatchAll) {
+            const handleTagModeChange = (e) => {
+                this.tagMatchAll = e.target.value === 'all';
+                // Trigger search if live search is enabled and tag filter has value
+                if (this.liveSearchEnabled && this.currentView === 'search') {
+                    const tagFilter = document.getElementById('tagFilter');
+                    if (tagFilter && tagFilter.value.trim()) {
+                        this.handleFilterChange();
+                    }
+                }
+            };
+            tagMatchAny.addEventListener('change', handleTagModeChange);
+            tagMatchAll.addEventListener('change', handleTagModeChange);
+        }
+
         // View option handlers
         document.querySelectorAll('.view-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
@@ -262,13 +302,29 @@ class MemoryDashboard {
 
     /**
      * Set up Server-Sent Events for real-time updates
+     * 
+     * Automatically includes authentication token as query parameter since
+     * EventSource doesn't support custom headers natively.
      */
     setupSSE() {
         try {
-            this.eventSource = new EventSource(`${this.apiBase}/events`);
+            // Get authentication token
+            const token = this.getAuthToken();
+            
+            // Build SSE URL - include token as query parameter since EventSource can't set headers
+            let sseUrl = `${this.apiBase}/events`;
+            if (token) {
+                sseUrl += `?token=${encodeURIComponent(token)}`;
+                console.log('SSE: Connecting with authentication token');
+            } else {
+                console.log('SSE: Connecting without authentication');
+            }
+            
+            this.eventSource = new EventSource(sseUrl);
 
             this.eventSource.onopen = () => {
                 this.updateConnectionStatus('connected');
+                console.log('SSE: Connected successfully');
             };
 
             this.eventSource.onmessage = (event) => {
@@ -857,8 +913,15 @@ class MemoryDashboard {
         formData.append('chunk_overlap', config.chunk_overlap.toString());
         formData.append('memory_type', config.memory_type);
 
+        const headers = {};
+        const token = this.getAuthToken();
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
         const response = await fetch(`${this.apiBase}/documents/upload`, {
             method: 'POST',
+            headers: headers,
             body: formData
         });
 
@@ -908,8 +971,15 @@ class MemoryDashboard {
         formData.append('chunk_overlap', config.chunk_overlap.toString());
         formData.append('memory_type', config.memory_type);
 
+        const headers = {};
+        const token = this.getAuthToken();
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
         const response = await fetch(`${this.apiBase}/documents/batch-upload`, {
             method: 'POST',
+            headers: headers,
             body: formData
         });
 
@@ -1368,7 +1438,7 @@ class MemoryDashboard {
             const tagValue = tagMatch[2].trim();
             const payload = {
                 tags: [tagValue],
-                match_all: false // ANY match by default
+                match_all: this.tagMatchAll // Use UI setting for match mode
             };
 
             const response = await this.apiCall('/search/by-tag', 'POST', payload);
@@ -1381,9 +1451,12 @@ class MemoryDashboard {
                 ...filters
             };
 
-            // Only add similarity_threshold if explicitly set in filters
+            // Add similarity threshold from UI setting
+            // Use filters.threshold if provided, otherwise use the slider value
             if (filters.threshold !== undefined) {
                 payload.similarity_threshold = filters.threshold;
+            } else if (this.similarityThreshold !== undefined) {
+                payload.similarity_threshold = this.similarityThreshold;
             }
 
             const response = await this.apiCall('/search', 'POST', payload);
@@ -1422,12 +1495,22 @@ class MemoryDashboard {
                     if (tags.length > 0) {
                         results = results.filter(result => {
                             const memoryTags = result.memory.tags || [];
-                            // Check if any of the specified tags match memory tags (case-insensitive)
-                            return tags.some(filterTag =>
-                                memoryTags.some(memoryTag =>
-                                    memoryTag.toLowerCase().includes(filterTag.toLowerCase())
-                                )
-                            );
+                            
+                            if (this.tagMatchAll) {
+                                // Match ALL: memory must have all specified tags (AND logic)
+                                return tags.every(filterTag =>
+                                    memoryTags.some(memoryTag =>
+                                        memoryTag.toLowerCase().includes(filterTag.toLowerCase())
+                                    )
+                                );
+                            } else {
+                                // Match ANY: memory needs at least one tag (OR logic)
+                                return tags.some(filterTag =>
+                                    memoryTags.some(memoryTag =>
+                                        memoryTag.toLowerCase().includes(filterTag.toLowerCase())
+                                    )
+                                );
+                            }
                         });
                     }
                 }
@@ -1439,7 +1522,7 @@ class MemoryDashboard {
                 if (tags.length > 0) {
                     const payload = {
                         tags: tags,
-                        match_all: false // ANY match by default
+                        match_all: this.tagMatchAll // Use UI setting for match mode
                     };
 
                     const response = await this.apiCall('/search/by-tag', 'POST', payload);
@@ -1471,13 +1554,16 @@ class MemoryDashboard {
                     });
                 }
             }
-            // Priority 4: Type-only filter
+            // Priority 4: Type-only filter (use server-side filtering)
             else if (typeFilter && typeFilter.trim()) {
-                const allMemoriesResponse = await this.apiCall('/memories?page=1&page_size=1000');
+                // Use API's built-in memory_type parameter for efficient server-side filtering
+                const allMemoriesResponse = await this.apiCall(`/memories?page=1&page_size=100&memory_type=${encodeURIComponent(typeFilter)}`);
                 if (allMemoriesResponse.memories) {
-                    results = allMemoriesResponse.memories
-                        .filter(memory => (memory.memory_type || 'note') === typeFilter)
-                        .map(memory => ({ memory, similarity: 1.0 }));
+                    results = allMemoriesResponse.memories.map(memory => ({ 
+                        memory, 
+                        similarity_score: null,
+                        relevance_reason: `Memory type: ${typeFilter}` 
+                    }));
                 }
             } else {
                 // No filters, clear results
@@ -2554,7 +2640,50 @@ class MemoryDashboard {
     }
 
     /**
-     * Generic API call wrapper
+     * Get authentication token from storage
+     */
+    getAuthToken() {
+        // Check sessionStorage first (set by OAuth login page)
+        let token = sessionStorage.getItem('mcp_access_token');
+
+        // Fallback to localStorage (saved OAuth data)
+        if (!token) {
+            const savedData = localStorage.getItem('mcp_oauth_data');
+            if (savedData) {
+                try {
+                    const oauthData = JSON.parse(savedData);
+                    token = oauthData.accessToken;
+                } catch (e) {
+                    console.warn('Failed to parse OAuth data:', e);
+                }
+            }
+        }
+
+        return token;
+    }
+
+    /**
+     * Check if user is authenticated
+     */
+    isAuthenticated() {
+        return !!this.getAuthToken();
+    }
+
+    /**
+     * Redirect to login page if not authenticated
+     */
+    requireAuth() {
+        if (!this.isAuthenticated()) {
+            // Store current page for redirect after login
+            sessionStorage.setItem('mcp_redirect_after_login', window.location.pathname);
+            window.location.href = '/oauth-login.html';
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Generic API call wrapper with automatic authentication
      */
     async apiCall(endpoint, method = 'GET', data = null) {
         const options = {
@@ -2564,11 +2693,25 @@ class MemoryDashboard {
             }
         };
 
+        // Add authentication token if available
+        const token = this.getAuthToken();
+        if (token) {
+            options.headers['Authorization'] = `Bearer ${token}`;
+        }
+
         if (data) {
             options.body = JSON.stringify(data);
         }
 
         const response = await fetch(`${this.apiBase}${endpoint}`, options);
+
+        // Handle 401 Unauthorized - redirect to login
+        if (response.status === 401) {
+            console.warn('Authentication required - redirecting to login');
+            sessionStorage.setItem('mcp_redirect_after_login', window.location.pathname);
+            window.location.href = '/oauth-login.html';
+            throw new Error('Authentication required');
+        }
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
@@ -3039,10 +3182,7 @@ class MemoryDashboard {
      */
     async loadTagSelectOptions() {
         try {
-            const response = await fetch(`${this.apiBase}/manage/tags/stats`);
-            if (!response.ok) throw new Error('Failed to load tags');
-
-            const data = await response.json();
+            const data = await this.apiCall('/manage/tags/stats', 'GET');
             const select = document.getElementById('deleteTagSelect');
             if (!select) return;
 
@@ -3072,10 +3212,7 @@ class MemoryDashboard {
         if (!container) return;
 
         try {
-            const response = await fetch(`${this.apiBase}/manage/tags/stats`);
-            if (!response.ok) throw new Error('Failed to load tag stats');
-
-            const data = await response.json();
+            const data = await this.apiCall('/manage/tags/stats', 'GET');
             this.renderTagManagementTable(data);
         } catch (error) {
             console.error('Failed to load tag management stats:', error);
@@ -3149,9 +3286,15 @@ class MemoryDashboard {
 
         this.setLoading(true);
         try {
+            const headers = { 'Content-Type': 'application/json' };
+            const token = this.getAuthToken();
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+
             const response = await fetch(`${this.apiBase}/manage/bulk-delete`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: headers,
                 body: JSON.stringify({
                     tag: tag,
                     confirm_count: count
@@ -3184,8 +3327,15 @@ class MemoryDashboard {
 
         this.setLoading(true);
         try {
+            const headers = {};
+            const token = this.getAuthToken();
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+
             const response = await fetch(`${this.apiBase}/manage/cleanup-duplicates`, {
-                method: 'POST'
+                method: 'POST',
+                headers: headers
             });
 
             const result = await response.json();
@@ -3222,9 +3372,15 @@ class MemoryDashboard {
 
         this.setLoading(true);
         try {
+            const headers = { 'Content-Type': 'application/json' };
+            const token = this.getAuthToken();
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+
             const response = await fetch(`${this.apiBase}/manage/bulk-delete`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: headers,
                 body: JSON.stringify({
                     before_date: date
                 })
@@ -3307,10 +3463,7 @@ class MemoryDashboard {
      */
     async loadAnalyticsOverview() {
         try {
-            const response = await fetch(`${this.apiBase}/analytics/overview`);
-            if (!response.ok) throw new Error('Failed to load overview');
-
-            const data = await response.json();
+            const data = await this.apiCall('/analytics/overview', 'GET');
 
             // Update metric cards
             this.updateElementText('analyticsTotalMemories', data.total_memories || 0);
@@ -3333,10 +3486,7 @@ class MemoryDashboard {
         if (!container) return;
 
         try {
-            const response = await fetch(`${this.apiBase}/analytics/memory-growth?period=${period}`);
-            if (!response.ok) throw new Error('Failed to load growth data');
-
-            const data = await response.json();
+            const data = await this.apiCall(`/analytics/memory-growth?period=${period}`, 'GET');
             this.renderMemoryGrowthChart(container, data);
         } catch (error) {
             console.error('Failed to load memory growth:', error);
@@ -3378,10 +3528,7 @@ class MemoryDashboard {
         if (!container) return;
 
         try {
-            const response = await fetch(`${this.apiBase}/analytics/tag-usage`);
-            if (!response.ok) throw new Error('Failed to load tag usage');
-
-            const data = await response.json();
+            const data = await this.apiCall('/analytics/tag-usage', 'GET');
             this.renderTagUsageChart(container, data);
         } catch (error) {
             console.error('Failed to load tag usage:', error);
@@ -3422,10 +3569,7 @@ class MemoryDashboard {
         if (!container) return;
 
         try {
-            const response = await fetch(`${this.apiBase}/analytics/memory-types`);
-            if (!response.ok) throw new Error('Failed to load memory types');
-
-            const data = await response.json();
+            const data = await this.apiCall('/analytics/memory-types', 'GET');
             this.renderMemoryTypesChart(container, data);
         } catch (error) {
             console.error('Failed to load memory types:', error);
@@ -3466,10 +3610,7 @@ class MemoryDashboard {
         if (!container) return;
 
         try {
-            const response = await fetch(`${this.apiBase}/analytics/tag-usage`);
-            if (!response.ok) throw new Error('Failed to load top tags');
-
-            const data = await response.json();
+            const data = await this.apiCall('/analytics/tag-usage', 'GET');
             this.renderTopTagsReport(container, data);
         } catch (error) {
             console.error('Failed to load top tags:', error);
@@ -3504,10 +3645,7 @@ class MemoryDashboard {
 
         try {
             // Get recent memories
-            const response = await fetch(`${this.apiBase}/memories?page=1&page_size=5`);
-            if (!response.ok) throw new Error('Failed to load recent activity');
-
-            const data = await response.json();
+            const data = await this.apiCall('/memories?page=1&page_size=5', 'GET');
             this.renderRecentActivityReport(container, data.memories);
         } catch (error) {
             console.error('Failed to load recent activity:', error);

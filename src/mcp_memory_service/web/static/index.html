@@ -248,6 +248,27 @@
                             </label>
                             <input type="text" id="tagFilter" placeholder="e.g., work, coding, important">
                             <small class="help-text">Separate multiple tags with commas</small>
+                            
+                            <!-- Tag Match Mode Toggle -->
+                            <div class="tag-match-mode" style="margin-top: 10px;">
+                                <label style="font-size: 0.9em; font-weight: normal;">Tag Match Mode:</label>
+                                <div class="radio-group" style="display: flex; gap: 15px; margin-top: 5px;">
+                                    <label class="radio-label">
+                                        <input type="radio" name="tagMatchMode" id="tagMatchAny" value="any" checked>
+                                        <span>Match ANY</span>
+                                        <span class="tooltip" title="Return memories that have at least one of the specified tags (OR logic)">
+                                            <svg width="14" height="14" fill="currentColor"><use href="#info-icon"/></svg>
+                                        </span>
+                                    </label>
+                                    <label class="radio-label">
+                                        <input type="radio" name="tagMatchMode" id="tagMatchAll" value="all">
+                                        <span>Match ALL</span>
+                                        <span class="tooltip" title="Return only memories that have all of the specified tags (AND logic)">
+                                            <svg width="14" height="14" fill="currentColor"><use href="#info-icon"/></svg>
+                                        </span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="filter-section">
@@ -260,10 +281,10 @@
                                 <option value="">All time</option>
                                 <option value="today">Today</option>
                                 <option value="yesterday">Yesterday</option>
-                                <option value="week">This week</option>
-                                <option value="month">This month</option>
-                                <option value="quarter">This quarter</option>
-                                <option value="year">This year</option>
+                                <option value="this week">This week</option>
+                                <option value="last week">Last week</option>
+                                <option value="this month">This month</option>
+                                <option value="last month">Last month</option>
                             </select>
                             <small class="help-text">Select a time period to filter memories</small>
                         </div>
@@ -282,6 +303,17 @@
                                 <option value="idea">Ideas</option>
                             </select>
                             <small class="help-text">Choose the type of memories to show</small>
+                        </div>
+
+                        <div class="filter-section">
+                            <label for="similarityThreshold">
+                                Similarity Threshold: <span id="similarityThresholdValue">0.30</span>
+                                <span class="tooltip" title="Minimum similarity score (0-1). Higher values show only more relevant results. Recommended: 0.3 for balanced results, 0.5 for high precision.">
+                                    <svg width="16" height="16" fill="currentColor"><use href="#info-icon"/></svg>
+                                </span>
+                            </label>
+                            <input type="range" id="similarityThreshold" min="0" max="1" step="0.05" value="0.30" class="form-control">
+                            <small class="help-text">Lower = more results (may include noise), Higher = fewer but more relevant results</small>
                         </div>
 
                         <!-- Filter Actions -->

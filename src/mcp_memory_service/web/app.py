@@ -38,7 +38,10 @@ from ..config import (
     EMBEDDING_MODEL_NAME,
     MDNS_ENABLED,
     HTTPS_ENABLED,
-    OAUTH_ENABLED
+    OAUTH_ENABLED,
+    OAUTH_ALLOW_CLIENT_REGISTRATION,
+    OAUTH_ALLOW_AUTHORIZATION,
+    API_KEY
 )
 from .dependencies import set_storage, get_storage, create_storage_backend
 from .api.health import router as health_router
@@ -50,6 +53,7 @@ from .api.manage import router as manage_router
 from .api.analytics import router as analytics_router
 from .api.documents import router as documents_router
 from .api.mcp import router as mcp_router
+from .api.auth_config import router as auth_config_router
 from .sse import sse_manager
 
 logger = logging.getLogger(__name__)
@@ -189,6 +193,11 @@ def create_app() -> FastAPI:
     
     # Include API routers
     logger.info("Including API routers...")
+    
+    # Include auth config router (no authentication required - it tells clients what auth is available)
+    app.include_router(auth_config_router, prefix="/api", tags=["auth-config"])
+    logger.info(f"✓ Included auth config router with {len(auth_config_router.routes)} routes")
+    
     app.include_router(health_router, prefix="/api", tags=["health"])
     logger.info(f"✓ Included health router with {len(health_router.routes)} routes")
     app.include_router(memories_router, prefix="/api", tags=["memories"])
@@ -217,14 +226,26 @@ def create_app() -> FastAPI:
     # Include OAuth routers if enabled
     if OAUTH_ENABLED:
         from .oauth.discovery import router as oauth_discovery_router
-        from .oauth.registration import router as oauth_registration_router
-        from .oauth.authorization import router as oauth_authorization_router
-
+        
+        # Always include discovery endpoint (for OAuth metadata)
         app.include_router(oauth_discovery_router, tags=["oauth-discovery"])
-        app.include_router(oauth_registration_router, prefix="/oauth", tags=["oauth"])
-        app.include_router(oauth_authorization_router, prefix="/oauth", tags=["oauth"])
+        
+        # Conditionally include registration and authorization based on security settings
+        if OAUTH_ALLOW_CLIENT_REGISTRATION:
+            from .oauth.registration import router as oauth_registration_router
+            app.include_router(oauth_registration_router, prefix="/oauth", tags=["oauth"])
+            logger.info("OAuth client registration endpoint enabled")
+        else:
+            logger.info("OAuth client registration endpoint DISABLED (security)")
+            
+        if OAUTH_ALLOW_AUTHORIZATION:
+            from .oauth.authorization import router as oauth_authorization_router
+            app.include_router(oauth_authorization_router, prefix="/oauth", tags=["oauth"])
+            logger.info("OAuth authorization endpoint enabled")
+        else:
+            logger.info("OAuth authorization endpoint DISABLED (security)")
 
-        logger.info("OAuth 2.1 endpoints enabled")
+        logger.info("OAuth 2.1 discovery endpoint enabled")
     else:
         logger.info("OAuth 2.1 endpoints disabled")
 
@@ -928,6 +949,34 @@ def create_app() -> FastAPI:
             # Error fallback to original template
             logger.warning(f"Error loading migrated dashboard: {e}")
             return html_template
+
+    @app.get("/oauth-login.html", response_class=HTMLResponse)
+    async def oauth_login():
+        """Serve the OAuth login page."""
+        try:
+            login_path = os.path.join(os.path.dirname(__file__), "static", "oauth-login.html")
+            if os.path.exists(login_path):
+                with open(login_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            else:
+                raise HTTPException(status_code=404, detail="OAuth login page not found")
+        except Exception as e:
+            logger.error(f"Error loading OAuth login page: {e}")
+            raise HTTPException(status_code=500, detail="Failed to load OAuth login page")
+
+    @app.get("/oauth-callback.html", response_class=HTMLResponse)
+    async def oauth_callback():
+        """Serve the OAuth callback page."""
+        try:
+            callback_path = os.path.join(os.path.dirname(__file__), "static", "oauth-callback.html")
+            if os.path.exists(callback_path):
+                with open(callback_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            else:
+                raise HTTPException(status_code=404, detail="OAuth callback page not found")
+        except Exception as e:
+            logger.error(f"Error loading OAuth callback page: {e}")
+            raise HTTPException(status_code=500, detail="Failed to load OAuth callback page")
     
     return app
 

@@ -32,11 +32,12 @@ from .memories import MemoryResponse, memory_to_response
 
 # OAuth authentication imports (conditional)
 if OAUTH_ENABLED or TYPE_CHECKING:
-    from ..oauth.middleware import require_write_access, AuthenticationResult
+    from ..oauth.middleware import require_write_access, require_read_access, AuthenticationResult
 else:
     # Provide type stubs when OAuth is disabled
     AuthenticationResult = None
     require_write_access = None
+    require_read_access = None
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -215,7 +216,7 @@ async def cleanup_duplicates(
 @router.get("/tags/stats", response_model=TagStatsListResponse, tags=["management"])
 async def get_tag_statistics(
     storage: MemoryStorage = Depends(get_storage),
-    user: AuthenticationResult = Depends(require_write_access) if OAUTH_ENABLED else None
+    user: AuthenticationResult = Depends(require_read_access) if OAUTH_ENABLED else None
 ):
     """
     Get detailed statistics for all tags.

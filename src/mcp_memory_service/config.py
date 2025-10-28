@@ -616,6 +616,12 @@ if CONSOLIDATION_ENABLED:
 # OAuth 2.1 Configuration
 OAUTH_ENABLED = safe_get_bool_env('MCP_OAUTH_ENABLED', True)
 
+# Granular OAuth feature controls
+# SECURITY: Set these to False to disable OAuth registration/authorization flows
+# and only allow API key authentication
+OAUTH_ALLOW_CLIENT_REGISTRATION = safe_get_bool_env('MCP_OAUTH_ALLOW_CLIENT_REGISTRATION', True)
+OAUTH_ALLOW_AUTHORIZATION = safe_get_bool_env('MCP_OAUTH_ALLOW_AUTHORIZATION', True)
+
 # RSA key pair configuration for JWT signing (RS256)
 # Private key for signing tokens
 OAUTH_PRIVATE_KEY = os.getenv('MCP_OAUTH_PRIVATE_KEY')
@@ -804,6 +810,8 @@ logger.info(f"OAuth enabled: {OAUTH_ENABLED}")
 if OAUTH_ENABLED:
     logger.info(f"OAuth issuer: {OAUTH_ISSUER}")
     logger.info(f"OAuth JWT algorithm: {get_jwt_algorithm()}")
+    logger.info(f"OAuth client registration allowed: {OAUTH_ALLOW_CLIENT_REGISTRATION}")
+    logger.info(f"OAuth authorization flow allowed: {OAUTH_ALLOW_AUTHORIZATION}")
     logger.info(f"OAuth access token expiry: {OAUTH_ACCESS_TOKEN_EXPIRE_MINUTES} minutes")
     logger.info(f"Anonymous access allowed: {ALLOW_ANONYMOUS_ACCESS}")
 

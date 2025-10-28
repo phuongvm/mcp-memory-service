@@ -2,21 +2,28 @@
 Server-Sent Events endpoints for real-time updates.
 """
 
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, Request, Depends, Query, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
-from typing import Dict, Any, List, TYPE_CHECKING
+from typing import Dict, Any, List, TYPE_CHECKING, Optional
+import logging
 
-from ...config import OAUTH_ENABLED
+from ...config import OAUTH_ENABLED, API_KEY, ALLOW_ANONYMOUS_ACCESS
 from ..sse import create_event_stream, sse_manager
 from ..dependencies import get_storage
 
 # OAuth authentication imports (conditional)
 if OAUTH_ENABLED or TYPE_CHECKING:
-    from ..oauth.middleware import require_read_access, AuthenticationResult
+    from ..oauth.middleware import require_read_access, AuthenticationResult, authenticate_bearer_token, authenticate_api_key
 else:
     # Provide type stubs when OAuth is disabled
     AuthenticationResult = None
     require_read_access = None
+    authenticate_bearer_token = None
+    authenticate_api_key = None
+
+bearer_scheme = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -37,10 +44,90 @@ class SSEStatsResponse(BaseModel):
     connections: List[ConnectionInfo]
 
 
+async def authenticate_sse_request(
+    request: Request,
+    token: Optional[str] = Query(None, description="Bearer token for authentication (since EventSource cannot set headers)"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)
+) -> Optional[AuthenticationResult]:
+    """
+    Authenticate SSE requests with support for both query parameters and headers.
+    
+    EventSource doesn't support custom headers, so we accept tokens via query parameter.
+    Also supports Authorization header for browser extensions like ModHeader.
+    """
+    # Try query parameter first (for EventSource without extensions)
+    if token:
+        logger.debug("SSE: Attempting auth via query parameter")
+        # Try OAuth Bearer token
+        if OAUTH_ENABLED and authenticate_bearer_token:
+            try:
+                auth_result = await authenticate_bearer_token(token)
+                if auth_result.authenticated:
+                    logger.debug("SSE: Authenticated via query parameter (OAuth)")
+                    return auth_result
+            except Exception as e:
+                logger.debug(f"SSE: OAuth token validation failed: {e}")
+        
+        # Try API key
+        if API_KEY and authenticate_api_key:
+            api_key_result = authenticate_api_key(token)
+            if api_key_result.authenticated:
+                logger.debug("SSE: Authenticated via query parameter (API key)")
+                return api_key_result
+    
+    # Try Authorization header (for ModHeader or similar extensions)
+    if credentials and credentials.scheme.lower() == "bearer":
+        logger.debug("SSE: Attempting auth via Authorization header")
+        # Try OAuth Bearer token
+        if OAUTH_ENABLED and authenticate_bearer_token:
+            try:
+                auth_result = await authenticate_bearer_token(credentials.credentials)
+                if auth_result.authenticated:
+                    logger.debug("SSE: Authenticated via Authorization header (OAuth)")
+                    return auth_result
+            except Exception as e:
+                logger.debug(f"SSE: OAuth header validation failed: {e}")
+        
+        # Try API key
+        if API_KEY and authenticate_api_key:
+            api_key_result = authenticate_api_key(credentials.credentials)
+            if api_key_result.authenticated:
+                logger.debug("SSE: Authenticated via Authorization header (API key)")
+                return api_key_result
+    
+    # If OAuth is disabled, allow unauthenticated access
+    if not OAUTH_ENABLED:
+        logger.debug("SSE: OAuth disabled, allowing unauthenticated access")
+        return None
+    
+    # Allow anonymous access if explicitly enabled
+    if ALLOW_ANONYMOUS_ACCESS:
+        logger.debug("SSE: Anonymous access allowed")
+        return AuthenticationResult(
+            authenticated=True,
+            client_id="anonymous",
+            scope="read",
+            auth_method="none"
+        )
+    
+    # Authentication required but not provided (OAuth is enabled)
+    if OAUTH_ENABLED or API_KEY:
+        logger.warning("SSE: Authentication required but not provided")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "authorization_required",
+                "error_description": "Authentication required. Pass token as query parameter: /api/events?token=YOUR_TOKEN"
+            }
+        )
+    
+    return None
+
+
 @router.get("/events")
 async def events_endpoint(
     request: Request,
-    user: AuthenticationResult = Depends(require_read_access) if OAUTH_ENABLED else None
+    user: Optional[AuthenticationResult] = Depends(authenticate_sse_request)
 ):
     """
     Server-Sent Events endpoint for real-time updates.
@@ -52,6 +139,10 @@ async def events_endpoint(
     - health_update: System status changes
     - heartbeat: Periodic keep-alive signals
     - connection_established: Welcome message
+    
+    Authentication:
+    - Via query parameter: /api/events?token=YOUR_TOKEN (for EventSource)
+    - Via Authorization header: Authorization: Bearer YOUR_TOKEN (for ModHeader)
     """
     return await create_event_stream(request)
 

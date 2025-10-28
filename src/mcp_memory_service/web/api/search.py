@@ -123,7 +123,7 @@ async def semantic_search(
         result = await memory_service.retrieve_memory(
             query=request.query,
             n_results=request.n_results,
-            similarity_threshold=request.similarity_threshold
+            min_similarity=request.similarity_threshold
         )
         
         # Convert service result to API response format
