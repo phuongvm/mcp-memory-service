@@ -18,12 +18,6 @@ from .base import MemoryStorage
 __all__ = ['MemoryStorage']
 
 try:
-    from .chroma import ChromaMemoryStorage
-    __all__.append('ChromaMemoryStorage')
-except ImportError:
-    ChromaMemoryStorage = None
-
-try:
     from .sqlite_vec import SqliteVecMemoryStorage
     __all__.append('SqliteVecMemoryStorage')
 except ImportError:
@@ -34,3 +28,9 @@ try:
     __all__.append('CloudflareStorage')
 except ImportError:
     CloudflareStorage = None
+
+try:
+    from .hybrid import HybridMemoryStorage
+    __all__.append('HybridMemoryStorage')
+except ImportError:
+    HybridMemoryStorage = None

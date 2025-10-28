@@ -46,26 +46,23 @@ def cli(ctx):
             stacklevel=2
         )
         # Default to server command with default options for backward compatibility
-        ctx.invoke(server, debug=False, chroma_path=None, storage_backend='sqlite_vec')
+        ctx.invoke(server, debug=False, storage_backend=None)
 
 
 @cli.command()
 @click.option('--debug', is_flag=True, help='Enable debug logging')
-@click.option('--chroma-path', type=str, help='Path to ChromaDB storage')
-@click.option('--storage-backend', '-s', default='sqlite_vec', 
-              type=click.Choice(['sqlite_vec', 'chromadb']), help='Storage backend to use')
-def server(debug, chroma_path, storage_backend):
+@click.option('--storage-backend', '-s', default=None,
+              type=click.Choice(['sqlite_vec', 'sqlite-vec', 'cloudflare', 'hybrid']), help='Storage backend to use (defaults to environment or sqlite_vec)')
+def server(debug, storage_backend):
     """
     Start the MCP Memory Service server.
-    
+
     This starts the Model Context Protocol server that can be used by
     Claude Desktop, VS Code extensions, and other MCP-compatible clients.
     """
-    # Set environment variables if provided
-    if storage_backend:
+    # Set environment variables if explicitly provided
+    if storage_backend is not None:
         os.environ['MCP_MEMORY_STORAGE_BACKEND'] = storage_backend
-    if chroma_path:
-        os.environ['MCP_MEMORY_CHROMA_PATH'] = chroma_path
     
     # Import and run the server main function
     from ..server import main as server_main
@@ -80,8 +77,8 @@ def server(debug, chroma_path, storage_backend):
 
 
 @cli.command()
-@click.option('--storage-backend', '-s', default='sqlite_vec', 
-              type=click.Choice(['sqlite_vec', 'chromadb']), help='Storage backend to use')
+@click.option('--storage-backend', '-s', default='sqlite_vec',
+              type=click.Choice(['sqlite_vec', 'sqlite-vec', 'cloudflare', 'hybrid']), help='Storage backend to use')
 def status():
     """
     Show memory service status and statistics.
@@ -153,20 +150,12 @@ def memory_server_main():
         action="store_true",
         help="Enable debug logging"
     )
-    parser.add_argument(
-        "--chroma-path",
-        type=str,
-        help="Path to ChromaDB storage"
-    )
-    
     args = parser.parse_args()
-    
+
     # Convert to Click CLI arguments and call server command
     click_args = ['server']
     if args.debug:
         click_args.append('--debug')
-    if args.chroma_path:
-        click_args.extend(['--chroma-path', args.chroma_path])
     
     # Call the Click CLI with the converted arguments
     try:

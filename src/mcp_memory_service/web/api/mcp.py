@@ -7,14 +7,23 @@ to directly access memory operations using the MCP standard.
 
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional, Union
-from fastapi import APIRouter, HTTPException, Request
+from typing import Dict, List, Any, Optional, Union, TYPE_CHECKING
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..dependencies import get_storage
 from ...utils.hashing import generate_content_hash
-from ...config import CONSOLIDATION_CONFIG
+from ...config import OAUTH_ENABLED
+
+# Import OAuth dependencies only when needed
+if OAUTH_ENABLED or TYPE_CHECKING:
+    from ..oauth.middleware import require_read_access, require_write_access, AuthenticationResult
+else:
+    # Provide type stubs when OAuth is disabled
+    AuthenticationResult = None
+    require_read_access = None
+    require_write_access = None
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +39,19 @@ class MCPRequest(BaseModel):
 
 
 class MCPResponse(BaseModel):
-    """MCP protocol response structure."""
+    """MCP protocol response structure.
+
+    According to JSON-RPC 2.0 spec:
+    - MUST have either 'result' OR 'error', not both
+    - MUST NOT include both result and error fields
+    - When serializing, we'll exclude None values to ensure compliance
+    """
+    model_config = ConfigDict(
+        # Exclude None values when serializing for JSON-RPC 2.0 compliance
+        use_enum_values=True,
+        exclude_none=True  # This is the key setting
+    )
+
     jsonrpc: str = "2.0"
     id: Optional[Union[str, int]] = None
     result: Optional[Dict[str, Any]] = None
@@ -69,7 +90,19 @@ MCP_TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Search query for finding relevant memories"},
                 "limit": {"type": "integer", "description": "Maximum number of memories to return", "default": 10},
-                "similarity_threshold": {"type": "number", "description": "Minimum similarity score threshold (0.0-1.0)", "default": CONSOLIDATION_CONFIG['similarity_threshold'], "minimum": 0.0, "maximum": 1.0}
+                "similarity_threshold": {"type": "number", "description": "Minimum similarity score threshold (0.0-1.0)", "default": 0.7, "minimum": 0.0, "maximum": 1.0}
+            },
+            "required": ["query"]
+        }
+    ),
+    MCPTool(
+        name="recall_memory",
+        description="Retrieve memories using natural language time expressions and optional semantic search",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural language query specifying the time frame or content to recall"},
+                "n_results": {"type": "integer", "description": "Maximum number of results to return", "default": 5}
             },
             "required": ["query"]
         }
@@ -80,13 +113,7 @@ MCP_TOOLS = [
         inputSchema={
             "type": "object", 
             "properties": {
-                "tags": {
-                    "oneOf": [
-                        {"type": "array", "items": {"type": "string"}},
-                        {"type": "string"}
-                    ],
-                    "description": "Tags to search for (array of strings or comma-separated string)"
-                },
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags to search for"},
                 "operation": {"type": "string", "enum": ["AND", "OR"], "description": "Tag search operation", "default": "AND"}
             },
             "required": ["tags"]
@@ -124,42 +151,34 @@ MCP_TOOLS = [
             }
         }
     ),
-    MCPTool(
-        name="search_by_time",
-        description="Search memories by time-based queries using natural language",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Natural language time query (e.g., 'last week', 'yesterday', 'this month')"},
-                "n_results": {"type": "integer", "description": "Maximum number of memories to return", "default": 10, "minimum": 1, "maximum": 100}
-            },
-            "required": ["query"]
-        }
-    ),
-    MCPTool(
-        name="search_similar",
-        description="Search for memories similar to a given memory by content hash",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "content_hash": {"type": "string", "description": "Content hash of the memory to find similar ones for"},
-                "limit": {"type": "integer", "description": "Maximum number of similar memories to return", "default": 5}
-            },
-            "required": ["content_hash"]
-        }
-    )
 ]
 
 
 @router.post("/")
 @router.post("")
-async def mcp_endpoint(request: MCPRequest):
+async def mcp_endpoint(
+    request: MCPRequest,
+    user: AuthenticationResult = Depends(require_read_access) if OAUTH_ENABLED else None
+):
     """Main MCP protocol endpoint for processing MCP requests."""
     try:
         storage = get_storage()
-        
+
+        # Handle notifications (requests without id) - per JSON-RPC 2.0 spec,
+        # notifications should not receive any response, but streamablehttp transport
+        # requires a valid JSON-RPC message. We return a success response with a sentinel id.
+        if request.id is None:
+            logger.info(f"Received notification: {request.method}")
+            # Return a minimal valid JSON-RPC success response
+            # Use a sentinel id since notifications don't have ids
+            response = MCPResponse(
+                id=-1,  # Sentinel value indicating this was a notification
+                result={"status": "ok"}
+            )
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
         if request.method == "initialize":
-            return MCPResponse(
+            response = MCPResponse(
                 id=request.id,
                 result={
                     "protocolVersion": "2024-11-05",
@@ -172,81 +191,65 @@ async def mcp_endpoint(request: MCPRequest):
                     }
                 }
             )
-        
+            # Return JSONResponse with excluded None values for JSON-RPC 2.0 compliance
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
         elif request.method == "tools/list":
-            return MCPResponse(
+            response = MCPResponse(
                 id=request.id,
                 result={
-                    "tools": [tool.dict() for tool in MCP_TOOLS]
+                    "tools": [tool.model_dump() for tool in MCP_TOOLS]
                 }
             )
-        
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
         elif request.method == "tools/call":
             tool_name = request.params.get("name") if request.params else None
             arguments = request.params.get("arguments", {}) if request.params else {}
-            
-            # Log detailed request information for debugging
-            logger.info(f"Tool call: {tool_name} with arguments: {arguments}")
-            
-            try:
-                result = await handle_tool_call(storage, tool_name, arguments)
-                logger.debug(f"Tool call {tool_name} completed successfully: {result}")
-                
-                return MCPResponse(
-                    id=request.id,
-                    result={
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": str(result)
-                            }
-                        ]
-                    }
-                )
-            except Exception as tool_error:
-                logger.error(f"Tool call {tool_name} failed with arguments {arguments}: {str(tool_error)}")
-                logger.error(f"Tool error traceback: {tool_error}", exc_info=True)
-                return MCPResponse(
-                    id=request.id,
-                    error={
-                        "code": -32603,
-                        "message": f"Tool execution failed: {str(tool_error)}"
-                    }
-                )
-        
+
+            result = await handle_tool_call(storage, tool_name, arguments)
+
+            import json
+            response = MCPResponse(
+                id=request.id,
+                result={
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(result)
+                        }
+                    ]
+                }
+            )
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
         else:
-            # Handle unknown methods
-            if request.id is None:
-                # Notification - return HTTP 202 Accepted as per MCP spec
-                from fastapi import status
-                from fastapi.responses import Response
-                return Response(status_code=status.HTTP_202_ACCEPTED)
-            else:
-                # Request - return error response
-                return MCPResponse(
-                    id=request.id,
-                    error={
-                        "code": -32601,
-                        "message": f"Method not found: {request.method}"
-                    }
-                )
-            
+            response = MCPResponse(
+                id=request.id,
+                error={
+                    "code": -32601,
+                    "message": f"Method not found: {request.method}"
+                }
+            )
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
     except Exception as e:
         logger.error(f"MCP endpoint error: {e}")
-        return MCPResponse(
+        response = MCPResponse(
             id=request.id,
             error={
                 "code": -32603,
                 "message": f"Internal error: {str(e)}"
             }
         )
+        return JSONResponse(content=response.model_dump(exclude_none=True))
 
 
 async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Handle MCP tool calls and route to appropriate memory operations."""
     
     if tool_name == "store_memory":
-        from ...services.memory_service import MemoryService
+        from mcp_memory_service.models.memory import Memory
         
         content = arguments.get("content")
         tags = arguments.get("tags", [])
@@ -264,249 +267,162 @@ async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -
         elif not isinstance(metadata, dict):
             metadata = {}
         
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.store_memory(
+        # Add client_hostname to metadata if provided
+        if client_hostname:
+            metadata["client_hostname"] = client_hostname
+        
+        content_hash = generate_content_hash(content, metadata)
+        
+        memory = Memory(
             content=content,
+            content_hash=content_hash,
             tags=tags,
             memory_type=memory_type,
-            metadata=metadata,
-            client_hostname=client_hostname
+            metadata=metadata
         )
         
+        success, message = await storage.store(memory)
+        
         return {
-            "success": result["success"],
-            "message": result["message"],
-            "content_hash": result["content_hash"]
+            "success": success,
+            "message": message,
+            "content_hash": memory.content_hash if success else None
         }
     
     elif tool_name == "retrieve_memory":
-        from ...services.memory_service import MemoryService
-        
         query = arguments.get("query")
         limit = arguments.get("limit", 10)
-        similarity_threshold = arguments.get("similarity_threshold", CONSOLIDATION_CONFIG['similarity_threshold'])
+        similarity_threshold = arguments.get("similarity_threshold", 0.0)
         
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.retrieve_memory(
-            query=query,
-            n_results=limit,
-            similarity_threshold=similarity_threshold
-        )
+        # Get results from storage (no similarity filtering at storage level)
+        results = await storage.retrieve(query=query, n_results=limit)
         
-        # Convert service result to MCP API format
-        results = []
-        for item in result["results"]:
-            results.append({
-                "content": item["memory"]["content"],
-                "content_hash": item["memory"]["content_hash"],
-                "tags": item["memory"]["tags"],
-                "similarity_score": item["similarity_score"],
-                "created_at": item["memory"]["created_at"]
-            })
+        # Apply similarity threshold filtering (same as API implementation)
+        if similarity_threshold is not None:
+            results = [
+                result for result in results
+                if result.relevance_score and result.relevance_score >= similarity_threshold
+            ]
         
         return {
-            "results": results,
-            "total_found": result["total_found"]
+            "results": [
+                {
+                    "content": r.memory.content,
+                    "content_hash": r.memory.content_hash,
+                    "tags": r.memory.tags,
+                    "similarity_score": r.relevance_score,
+                    "created_at": r.memory.created_at_iso
+                }
+                for r in results
+            ],
+            "total_found": len(results)
         }
-    
+
+    elif tool_name == "recall_memory":
+        query = arguments.get("query")
+        n_results = arguments.get("n_results", 5)
+
+        # Use storage recall_memory method which handles time expressions
+        memories = await storage.recall_memory(query=query, n_results=n_results)
+
+        return {
+            "results": [
+                {
+                    "content": m.content,
+                    "content_hash": m.content_hash,
+                    "tags": m.tags,
+                    "created_at": m.created_at_iso
+                }
+                for m in memories
+            ],
+            "total_found": len(memories)
+        }
+
     elif tool_name == "search_by_tag":
         tags = arguments.get("tags")
         operation = arguments.get("operation", "AND")
         
-        # Use shared service for consistent logic
-        from ...services.memory_service import MemoryService
-        memory_service = MemoryService(storage)
+        results = await storage.search_by_tags(tags=tags, operation=operation)
         
-        # Validate and normalize tags parameter
-        if not tags:
-            logger.error(f"search_by_tag: missing required parameter 'tags'. Arguments: {arguments}")
-            raise ValueError("Missing required parameter 'tags'")
-        
-        # Handle string input - convert to array (preserve existing logic for compatibility)
-        if isinstance(tags, str):
-            logger.info(f"search_by_tag: converting string tags to array: '{tags}'")
-            # Handle different string formats
-            if tags.startswith('[') and tags.endswith(']'):
-                # Handle "['docker', 'testing']" format
-                try:
-                    import ast
-                    tags = ast.literal_eval(tags)
-                    if not isinstance(tags, list):
-                        tags = [str(tags)]
-                except:
-                    # Fallback: treat as comma-separated
-                    tags = [tag.strip().strip("'\"") for tag in tags.strip('[]').split(',') if tag.strip()]
-            else:
-                # Handle comma-separated format
-                tags = [tag.strip() for tag in tags.split(',') if tag.strip()]
-        
-        if not isinstance(tags, list):
-            logger.error(f"search_by_tag: 'tags' parameter must be an array or string, got {type(tags).__name__}: {tags}. Arguments: {arguments}")
-            raise ValueError(f"Parameter 'tags' must be an array or string, got {type(tags).__name__}")
-        
-        # Ensure all tags are strings
-        tags = [str(tag).strip() for tag in tags if str(tag).strip()]
-        
-        if not tags:
-            logger.error(f"search_by_tag: no valid tags found after processing. Arguments: {arguments}")
-            raise ValueError("No valid tags provided")
-        
-        logger.debug(f"search_by_tag: validated and normalized tags={tags}, operation={operation}")
-        
-        # Convert operation to match_all boolean (AND=True, OR=False)
-        match_all = (operation == "AND")
-        
-        # Use service method for consistent logic
-        result = await memory_service.search_by_tag(
-            tags=tags,
-            match_all=match_all
-        )
-        
-        # Check for errors from service
-        if "error" in result:
-            raise ValueError(result["error"])
-        
-        # Convert service result to MCP API format
         return {
             "results": [
                 {
-                    "content": item["memory"]["content"],
-                    "content_hash": item["memory"]["content_hash"],
-                    "tags": item["memory"]["tags"],
-                    "created_at": item["memory"]["created_at"]
+                    "content": memory.content,
+                    "content_hash": memory.content_hash,
+                    "tags": memory.tags,
+                    "created_at": memory.created_at_iso
                 }
-                for item in result["results"]
+                for memory in results
             ],
-            "total_found": result["total_found"]
+            "total_found": len(results)
         }
     
     elif tool_name == "delete_memory":
-        from ...services.memory_service import MemoryService
-        
         content_hash = arguments.get("content_hash")
         
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.delete_memory(content_hash)
+        success, message = await storage.delete(content_hash)
         
         return {
-            "success": result["success"],
-            "message": result["message"]
+            "success": success,
+            "message": message
         }
     
     elif tool_name == "check_database_health":
-        from ...services.memory_service import MemoryService
-        
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.check_database_health()
-        
-        return result
+        stats = await storage.get_stats()
+
+        return {
+            "status": "healthy",
+            "statistics": stats
+        }
     
     elif tool_name == "list_memories":
-        from ...services.memory_service import MemoryService
-        
         page = arguments.get("page", 1)
         page_size = arguments.get("page_size", 10)
         tag = arguments.get("tag")
         memory_type = arguments.get("memory_type")
         
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.list_memories(
-            page=page,
-            page_size=page_size,
-            tag=tag,
-            memory_type=memory_type
+        # Calculate offset
+        offset = (page - 1) * page_size
+
+        # Use database-level filtering for better performance
+        tags_list = [tag] if tag else None
+        memories = await storage.get_all_memories(
+            limit=page_size,
+            offset=offset,
+            memory_type=memory_type,
+            tags=tags_list
         )
         
-        # Format for MCP response
-        return memory_service.format_mcp_response(result)
-    
-    elif tool_name == "search_by_time":
-        from ...services.memory_service import MemoryService
-        
-        query = arguments.get("query")
-        n_results = arguments.get("n_results", 10)
-        
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.search_by_time(
-            query=query,
-            n_results=n_results
-        )
-        
-        # Check for errors from service
-        if "error" in result:
-            return {
-                "success": False,
-                "message": result["error"]
-            }
-        
-        # Convert service result to MCP API format
         return {
-            "results": [
+            "memories": [
                 {
-                    "content": item["memory"]["content"],
-                    "content_hash": item["memory"]["content_hash"],
-                    "tags": item["memory"]["tags"],
-                    "memory_type": item["memory"]["memory_type"],
-                    "created_at": item["memory"]["created_at_iso"],
-                    "updated_at": item["memory"]["updated_at_iso"]
+                    "content": memory.content,
+                    "content_hash": memory.content_hash,
+                    "tags": memory.tags,
+                    "memory_type": memory.memory_type,
+                    "metadata": memory.metadata,
+                    "created_at": memory.created_at_iso,
+                    "updated_at": memory.updated_at_iso
                 }
-                for item in result["results"]
+                for memory in memories
             ],
-            "total_found": result["total_found"]
+            "page": page,
+            "page_size": page_size,
+            "total_found": len(memories)
         }
     
-    elif tool_name == "search_similar":
-        from ...services.memory_service import MemoryService
-        
-        content_hash = arguments.get("content_hash")
-        limit = arguments.get("limit", 5)
-        
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.search_similar(
-            content_hash=content_hash,
-            limit=limit
-        )
-        
-        # Check for service-level errors
-        if not result.get("success", True):
-            return {
-                "success": False,
-                "message": result.get("message", "Unknown error occurred")
-            }
-        
-        # Convert service result to MCP API format
-        return {
-            "success": True,
-            "target_memory": result["target_memory"],
-            "similar_memories": [
-                {
-                    "content": item["memory"]["content"],
-                    "content_hash": item["memory"]["content_hash"],
-                    "tags": item["memory"]["tags"],
-                    "similarity_score": item["similarity_score"],
-                    "created_at": item["memory"]["created_at_iso"]
-                }
-                for item in result["results"]
-            ],
-            "total_found": result["total_found"]
-        }
     
     else:
         raise ValueError(f"Unknown tool: {tool_name}")
 
 
 @router.get("/tools")
-async def list_mcp_tools():
+async def list_mcp_tools(
+    user: AuthenticationResult = Depends(require_read_access) if OAUTH_ENABLED else None
+):
     """List available MCP tools for discovery."""
     return {
-        "tools": [tool.dict() for tool in MCP_TOOLS],
+        "tools": [tool.model_dump() for tool in MCP_TOOLS],
         "protocol": "mcp",
         "version": "1.0"
     }
@@ -516,16 +432,8 @@ async def list_mcp_tools():
 async def mcp_health():
     """MCP-specific health check."""
     storage = get_storage()
-    
-    # Check if get_stats is async or sync
-    import asyncio
-    import inspect
-    
-    if inspect.iscoroutinefunction(storage.get_stats):
-        stats = await storage.get_stats()
-    else:
-        stats = storage.get_stats()
-    
+    stats = await storage.get_stats()
+
     return {
         "status": "healthy",
         "protocol": "mcp",

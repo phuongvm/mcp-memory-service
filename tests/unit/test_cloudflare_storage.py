@@ -145,30 +145,37 @@ class TestCloudflareStorage:
                     assert any("CREATE TABLE" in str(call) for call in mock_request.call_args_list)
                     assert cloudflare_storage._initialized
     
-    @pytest.mark.asyncio 
+    @pytest.mark.asyncio
     async def test_store_memory_small_content(self, cloudflare_storage, sample_memory):
         """Test storing memory with small content (no R2)."""
         # Mock successful responses
         mock_embedding = [0.1, 0.2, 0.3]
         mock_d1_response = Mock()
         mock_d1_response.json.return_value = {
-            "success": True, 
+            "success": True,
             "result": [{"meta": {"last_row_id": 123}}]
         }
-        mock_vectorize_response = Mock()
-        mock_vectorize_response.json.return_value = {"success": True}
-        
+
         with patch.object(cloudflare_storage, '_generate_embedding', return_value=mock_embedding):
-            with patch.object(cloudflare_storage, '_retry_request') as mock_request:
-                mock_request.side_effect = [mock_vectorize_response, mock_d1_response, mock_d1_response]
-                
-                success, message = await cloudflare_storage.store(sample_memory)
-                
-                assert success
-                assert "successfully" in message.lower()
-                
-                # Verify Vectorize and D1 calls were made
-                assert mock_request.call_count >= 2
+            # Mock Vectorize storage (bypasses HTTP client) - must be AsyncMock for async method
+            with patch.object(cloudflare_storage, '_store_vectorize_vector', new_callable=AsyncMock):
+                with patch.object(cloudflare_storage, '_retry_request') as mock_request:
+                    # Need 5 responses: 1 for memory insert + 2 tags * 2 calls each (insert + link)
+                    mock_request.side_effect = [
+                        mock_d1_response,  # Insert memory
+                        mock_d1_response,  # Insert tag "test"
+                        mock_d1_response,  # Link tag "test"
+                        mock_d1_response,  # Insert tag "memory"
+                        mock_d1_response   # Link tag "memory"
+                    ]
+
+                    success, message = await cloudflare_storage.store(sample_memory)
+
+                    assert success
+                    assert "successfully" in message.lower()
+
+                    # Verify all D1 calls were made
+                    assert mock_request.call_count == 5
     
     @pytest.mark.asyncio
     async def test_store_memory_large_content(self, cloudflare_storage):
@@ -181,17 +188,19 @@ class TestCloudflareStorage:
             tags=["large"],
             memory_type="standard"
         )
-        
+
         mock_embedding = [0.1, 0.2, 0.3]
         mock_response = Mock()
         mock_response.json.return_value = {"success": True, "result": [{"meta": {"last_row_id": 123}}]}
         mock_response.status_code = 200
-        
+
         with patch.object(cloudflare_storage, '_generate_embedding', return_value=mock_embedding):
-            with patch.object(cloudflare_storage, '_retry_request', return_value=mock_response):
-                success, message = await cloudflare_storage.store(memory)
-                
-                assert success
+            # Mock Vectorize storage (bypasses HTTP client) - must be AsyncMock for async method
+            with patch.object(cloudflare_storage, '_store_vectorize_vector', new_callable=AsyncMock):
+                with patch.object(cloudflare_storage, '_retry_request', return_value=mock_response):
+                    success, message = await cloudflare_storage.store(memory)
+
+                    assert success
                 assert "successfully" in message.lower()
     
     @pytest.mark.asyncio
@@ -361,10 +370,30 @@ class TestCloudflareStorage:
         mock_client = AsyncMock()
         cloudflare_storage.client = mock_client
         cloudflare_storage._embedding_cache = {"test": [1, 2, 3]}
-        
+
         await cloudflare_storage.close()
-        
+
         # Verify client was closed and cache cleared
         mock_client.aclose.assert_called_once()
         assert cloudflare_storage.client is None
         assert len(cloudflare_storage._embedding_cache) == 0
+
+    def test_sanitized_method(self, cloudflare_storage):
+        """Test tag sanitization method."""
+        # Test with None
+        assert cloudflare_storage.sanitized(None) == "[]"
+
+        # Test with string
+        assert cloudflare_storage.sanitized("tag1,tag2,tag3") == '["tag1", "tag2", "tag3"]'
+
+        # Test with list
+        assert cloudflare_storage.sanitized(["tag1", "tag2"]) == '["tag1", "tag2"]'
+
+        # Test with empty string
+        assert cloudflare_storage.sanitized("") == "[]"
+
+        # Test with empty list
+        assert cloudflare_storage.sanitized([]) == "[]"
+
+        # Test with mixed types in list
+        assert cloudflare_storage.sanitized([1, "tag2", 3.14]) == '["1", "tag2", "3.14"]'

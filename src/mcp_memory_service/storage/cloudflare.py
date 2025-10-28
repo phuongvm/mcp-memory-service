@@ -29,13 +29,27 @@ import httpx
 from .base import MemoryStorage
 from ..models.memory import Memory, MemoryQueryResult
 from ..utils.hashing import generate_content_hash
+from ..config import CLOUDFLARE_MAX_CONTENT_LENGTH
 
 logger = logging.getLogger(__name__)
 
 class CloudflareStorage(MemoryStorage):
     """Cloudflare-based storage backend using Vectorize, D1, and R2."""
-    
-    def __init__(self, 
+
+    # Content length limit from configuration
+    _MAX_CONTENT_LENGTH = CLOUDFLARE_MAX_CONTENT_LENGTH
+
+    @property
+    def max_content_length(self) -> Optional[int]:
+        """Maximum content length: 800 chars (BGE model 512 token limit)."""
+        return self._MAX_CONTENT_LENGTH
+
+    @property
+    def supports_chunking(self) -> bool:
+        """Cloudflare backend supports content chunking with metadata linking."""
+        return True
+
+    def __init__(self,
                  api_token: str,
                  account_id: str,
                  vectorize_index: str,
@@ -47,7 +61,7 @@ class CloudflareStorage(MemoryStorage):
                  base_delay: float = 1.0):
         """
         Initialize Cloudflare storage backend.
-        
+
         Args:
             api_token: Cloudflare API token
             account_id: Cloudflare account ID
@@ -68,20 +82,20 @@ class CloudflareStorage(MemoryStorage):
         self.large_content_threshold = large_content_threshold
         self.max_retries = max_retries
         self.base_delay = base_delay
-        
+
         # API endpoints
         self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
         self.vectorize_url = f"{self.base_url}/vectorize/v2/indexes/{vectorize_index}"
         self.d1_url = f"{self.base_url}/d1/database/{d1_database_id}"
         self.ai_url = f"{self.base_url}/ai/run/{embedding_model}"
-        
+
         if r2_bucket:
             self.r2_url = f"{self.base_url}/r2/buckets/{r2_bucket}/objects"
-        
+
         # HTTP client with connection pooling
         self.client = None
         self._initialized = False
-        
+
         # Embedding cache for performance
         self._embedding_cache = {}
         self._cache_max_size = 1000
@@ -142,7 +156,7 @@ class CloudflareStorage(MemoryStorage):
     async def _generate_embedding(self, text: str) -> List[float]:
         """Generate embedding using Workers AI or cache."""
         # Check cache first
-        text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        text_hash = hashlib.sha256(text.encode()).hexdigest()
         if text_hash in self._embedding_cache:
             return self._embedding_cache[text_hash]
         
@@ -292,7 +306,7 @@ class CloudflareStorage(MemoryStorage):
                 stored_content = f"[R2 Content: {r2_key}]"  # Placeholder in D1
             
             # Store vector in Vectorize
-            vector_id = f"mem_{memory.content_hash}"
+            vector_id = memory.content_hash
             vector_metadata = {
                 "content_hash": memory.content_hash,
                 "memory_type": memory.memory_type or "standard",
@@ -341,11 +355,13 @@ class CloudflareStorage(MemoryStorage):
                 headers=headers
             )
             
-            # Log the full response for debugging
+            # Log response status for debugging (avoid logging headers/body for security)
             logger.info(f"Vectorize response status: {response.status_code}")
-            logger.info(f"Vectorize response headers: {dict(response.headers)}")
             response_text = response.text
-            logger.info(f"Vectorize response body: {response_text}")
+            if response.status_code != 200:
+                # Only log response body on errors, and truncate to avoid credential exposure
+                truncated_response = response_text[:200] + "..." if len(response_text) > 200 else response_text
+                logger.warning(f"Vectorize error response (truncated): {truncated_response}")
             
             if response.status_code != 200:
                 raise ValueError(f"HTTP {response.status_code}: {response_text}")
@@ -458,7 +474,7 @@ class CloudflareStorage(MemoryStorage):
                 if memory:
                     query_result = MemoryQueryResult(
                         memory=memory,
-                        similarity_score=match.get("score", 0.0)
+                        relevance_score=match.get("score", 0.0)
                     )
                     results.append(query_result)
             
@@ -649,15 +665,25 @@ class CloudflareStorage(MemoryStorage):
     
     async def _delete_vectorize_vector(self, vector_id: str) -> None:
         """Delete vector from Vectorize."""
-        # Send IDs directly in the payload
-        payload = [vector_id]
-        
-        response = await self._retry_request("POST", f"{self.vectorize_url}/delete-by-ids", json=payload)
+        # Correct endpoint uses underscores, not hyphens
+        payload = {"ids": [vector_id]}
+
+        response = await self._retry_request("POST", f"{self.vectorize_url}/delete_by_ids", json=payload)
         result = response.json()
-        
+
         if not result.get("success"):
             logger.warning(f"Failed to delete vector from Vectorize: {result}")
-    
+
+    async def delete_vectors_by_ids(self, vector_ids: List[str]) -> Dict[str, Any]:
+        """Delete multiple vectors from Vectorize by their IDs."""
+        payload = {"ids": vector_ids}
+        response = await self._retry_request(
+            "POST",
+            f"{self.vectorize_url}/delete_by_ids",
+            json=payload
+        )
+        return response.json()
+
     async def _delete_r2_content(self, r2_key: str) -> None:
         """Delete content from R2."""
         try:
@@ -805,25 +831,32 @@ class CloudflareStorage(MemoryStorage):
     async def get_stats(self) -> Dict[str, Any]:
         """Get storage statistics."""
         try:
+            # Calculate timestamp for memories from last 7 days
+            week_ago = time.time() - (7 * 24 * 60 * 60)
+
             # Get memory count and size from D1
-            sql = """
-            SELECT 
+            sql = f"""
+            SELECT
                 COUNT(*) as total_memories,
                 SUM(content_size) as total_content_size,
                 COUNT(DISTINCT vector_id) as total_vectors,
-                COUNT(r2_key) as r2_stored_count
+                COUNT(r2_key) as r2_stored_count,
+                (SELECT COUNT(*) FROM tags) as unique_tags,
+                (SELECT COUNT(*) FROM memories WHERE created_at >= {week_ago}) as memories_this_week
             FROM memories
             """
-            
+
             payload = {"sql": sql}
             response = await self._retry_request("POST", f"{self.d1_url}/query", json=payload)
             result = response.json()
-            
+
             if result.get("success") and result.get("result", [{}])[0].get("results"):
                 stats = result["result"][0]["results"][0]
-                
+
                 return {
                     "total_memories": stats.get("total_memories", 0),
+                    "unique_tags": stats.get("unique_tags", 0),
+                    "memories_this_week": stats.get("memories_this_week", 0),
                     "total_content_size_bytes": stats.get("total_content_size", 0),
                     "total_vectors": stats.get("total_vectors", 0),
                     "r2_stored_count": stats.get("r2_stored_count", 0),
@@ -833,17 +866,21 @@ class CloudflareStorage(MemoryStorage):
                     "r2_bucket": self.r2_bucket,
                     "status": "operational"
                 }
-            
+
             return {
                 "total_memories": 0,
+                "unique_tags": 0,
+                "memories_this_week": 0,
                 "storage_backend": "cloudflare",
                 "status": "operational"
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to get stats: {e}")
             return {
                 "total_memories": 0,
+                "unique_tags": 0,
+                "memories_this_week": 0,
                 "storage_backend": "cloudflare",
                 "status": "error",
                 "error": str(e)
@@ -888,13 +925,385 @@ class CloudflareStorage(MemoryStorage):
             logger.error(f"Failed to get recent memories: {e}")
             return []
     
+    def sanitized(self, tags):
+        """Sanitize and normalize tags to a JSON string.
+
+        This method provides compatibility with the storage backend interface.
+        """
+        if tags is None:
+            return json.dumps([])
+        
+        # If we get a string, split it into an array
+        if isinstance(tags, str):
+            tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        # If we get an array, use it directly
+        elif isinstance(tags, list):
+            tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+        else:
+            return json.dumps([])
+                
+        # Return JSON string representation of the array
+        return json.dumps(tags)
+    
+    async def recall(self, query: Optional[str] = None, n_results: int = 5, start_timestamp: Optional[float] = None, end_timestamp: Optional[float] = None) -> List[MemoryQueryResult]:
+        """
+        Retrieve memories with combined time filtering and optional semantic search.
+
+        Args:
+            query: Optional semantic search query. If None, only time filtering is applied.
+            n_results: Maximum number of results to return.
+            start_timestamp: Optional start time for filtering.
+            end_timestamp: Optional end time for filtering.
+
+        Returns:
+            List of MemoryQueryResult objects.
+        """
+        try:
+            # Build time filtering WHERE clause for D1
+            time_conditions = []
+            params = []
+
+            if start_timestamp is not None:
+                time_conditions.append("created_at >= ?")
+                params.append(float(start_timestamp))
+
+            if end_timestamp is not None:
+                time_conditions.append("created_at <= ?")
+                params.append(float(end_timestamp))
+
+            time_where = " AND ".join(time_conditions) if time_conditions else ""
+
+            logger.info(f"Recall - Time filtering conditions: {time_where}, params: {params}")
+
+            # Determine search strategy
+            if query and query.strip():
+                # Combined semantic search with time filtering
+                logger.info(f"Recall - Using semantic search with query: '{query}'")
+
+                try:
+                    # Generate query embedding
+                    query_embedding = await self._generate_embedding(query)
+
+                    # Search Vectorize with semantic query
+                    search_payload = {
+                        "vector": query_embedding,
+                        "topK": n_results,
+                        "returnMetadata": "all",
+                        "returnValues": False
+                    }
+
+                    # Add time filtering to vectorize metadata if specified
+                    if time_conditions:
+                        # Note: Vectorize metadata filtering capabilities may be limited
+                        # We'll filter after retrieval for now
+                        logger.info("Recall - Time filtering will be applied post-retrieval from Vectorize")
+
+                    response = await self._retry_request("POST", f"{self.vectorize_url}/query", json=search_payload)
+                    result = response.json()
+
+                    if not result.get("success"):
+                        raise ValueError(f"Vectorize query failed: {result}")
+
+                    matches = result.get("result", {}).get("matches", [])
+
+                    # Convert matches to MemoryQueryResult objects with time filtering
+                    results = []
+                    for match in matches:
+                        memory = await self._load_memory_from_match(match)
+                        if memory:
+                            # Apply time filtering if needed
+                            if start_timestamp is not None and memory.created_at and memory.created_at < start_timestamp:
+                                continue
+                            if end_timestamp is not None and memory.created_at and memory.created_at > end_timestamp:
+                                continue
+
+                            query_result = MemoryQueryResult(
+                                memory=memory,
+                                relevance_score=match.get("score", 0.0)
+                            )
+                            results.append(query_result)
+
+                    logger.info(f"Recall - Retrieved {len(results)} memories with semantic search and time filtering")
+                    return results[:n_results]  # Ensure we don't exceed n_results
+
+                except Exception as e:
+                    logger.error(f"Recall - Semantic search failed, falling back to time-based search: {e}")
+                    # Fall through to time-based search
+
+            # Time-based search only (or fallback)
+            logger.info(f"Recall - Using time-based search only")
+
+            # Build D1 query for time-based retrieval
+            if time_where:
+                sql = f"SELECT * FROM memories WHERE {time_where} ORDER BY created_at DESC LIMIT ?"
+                params.append(n_results)
+            else:
+                # No time filters, get most recent
+                sql = "SELECT * FROM memories ORDER BY created_at DESC LIMIT ?"
+                params = [n_results]
+
+            payload = {"sql": sql, "params": params}
+            response = await self._retry_request("POST", f"{self.d1_url}/query", json=payload)
+            result = response.json()
+
+            if not result.get("success"):
+                raise ValueError(f"D1 query failed: {result}")
+
+            # Convert D1 results to MemoryQueryResult objects
+            results = []
+            if result.get("result", [{}])[0].get("results"):
+                for row in result["result"][0]["results"]:
+                    memory = await self._load_memory_from_row(row)
+                    if memory:
+                        # For time-based search without semantic query, use timestamp as relevance
+                        relevance_score = memory.created_at or 0.0
+                        query_result = MemoryQueryResult(
+                            memory=memory,
+                            relevance_score=relevance_score
+                        )
+                        results.append(query_result)
+
+            logger.info(f"Recall - Retrieved {len(results)} memories with time-based search")
+            return results
+
+        except Exception as e:
+            logger.error(f"Recall failed: {e}")
+            return []
+
+    async def get_all_memories(self, limit: int = None, offset: int = 0, memory_type: Optional[str] = None, tags: Optional[List[str]] = None) -> List[Memory]:
+        """
+        Get all memories in storage ordered by creation time (newest first).
+
+        Args:
+            limit: Maximum number of memories to return (None for all)
+            offset: Number of memories to skip (for pagination)
+            memory_type: Optional filter by memory type
+            tags: Optional filter by tags (matches ANY of the provided tags)
+
+        Returns:
+            List of Memory objects ordered by created_at DESC, optionally filtered by type and tags
+        """
+        try:
+            # Build SQL query with optional memory_type and tags filters
+            sql = "SELECT * FROM memories"
+            params = []
+            where_conditions = []
+
+            # Add memory_type filter if specified
+            if memory_type is not None:
+                where_conditions.append("memory_type = ?")
+                params.append(memory_type)
+
+            # Add tags filter if specified (using LIKE for tag matching)
+            if tags and len(tags) > 0:
+                tag_conditions = " OR ".join(["tags LIKE ?" for _ in tags])
+                where_conditions.append(f"({tag_conditions})")
+                params.extend([f"%{tag}%" for tag in tags])
+
+            # Apply WHERE clause if we have any conditions
+            if where_conditions:
+                sql += " WHERE " + " AND ".join(where_conditions)
+
+            sql += " ORDER BY created_at DESC"
+
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(limit)
+
+            if offset > 0:
+                sql += " OFFSET ?"
+                params.append(offset)
+
+            payload = {"sql": sql, "params": params}
+            response = await self._retry_request("POST", f"{self.d1_url}/query", json=payload)
+            result = response.json()
+
+            if not result.get("success"):
+                raise ValueError(f"D1 query failed: {result}")
+
+            memories = []
+            if result.get("result", [{}])[0].get("results"):
+                for row in result["result"][0]["results"]:
+                    memory = await self._load_memory_from_row(row)
+                    if memory:
+                        memories.append(memory)
+
+            logger.debug(f"Retrieved {len(memories)} memories from D1")
+            return memories
+
+        except Exception as e:
+            logger.error(f"Error getting all memories: {str(e)}")
+            return []
+
+    def _row_to_memory(self, row: Dict[str, Any]) -> Memory:
+        """Convert D1 row to Memory object without loading tags (for bulk operations)."""
+        # Load content from R2 if needed
+        content = row["content"]
+        if row.get("r2_key") and content.startswith("[R2 Content:"):
+            # For bulk operations, we don't load R2 content to avoid additional requests
+            # Just keep the placeholder
+            pass
+
+        return Memory(
+            content=content,
+            content_hash=row["content_hash"],
+            tags=[],  # Skip tag loading for bulk operations
+            memory_type=row.get("memory_type"),
+            metadata=json.loads(row["metadata_json"]) if row.get("metadata_json") else {},
+            created_at=row.get("created_at"),
+            created_at_iso=row.get("created_at_iso"),
+            updated_at=row.get("updated_at"),
+            updated_at_iso=row.get("updated_at_iso")
+        )
+
+    async def get_all_memories_bulk(
+        self,
+        include_tags: bool = False
+    ) -> List[Memory]:
+        """
+        Efficiently load all memories from D1.
+
+        If include_tags=False, skips N+1 tag queries for better performance.
+        Useful for maintenance scripts that don't need tag information.
+
+        Args:
+            include_tags: Whether to load tags for each memory (slower but complete)
+
+        Returns:
+            List of Memory objects ordered by created_at DESC
+        """
+        query = "SELECT * FROM memories ORDER BY created_at DESC"
+        payload = {"sql": query}
+        response = await self._retry_request("POST", f"{self.d1_url}/query", json=payload)
+        result = response.json()
+
+        if not result.get("success"):
+            raise ValueError(f"D1 query failed: {result}")
+
+        memories = []
+        if result.get("result", [{}])[0].get("results"):
+            for row in result["result"][0]["results"]:
+                if include_tags:
+                    memory = await self._load_memory_from_row(row)
+                else:
+                    memory = self._row_to_memory(row)
+                if memory:
+                    memories.append(memory)
+
+        logger.debug(f"Bulk loaded {len(memories)} memories from D1")
+        return memories
+
+    async def get_all_memories_cursor(self, limit: int = None, cursor: float = None, memory_type: Optional[str] = None, tags: Optional[List[str]] = None) -> List[Memory]:
+        """
+        Get all memories using cursor-based pagination to avoid D1 OFFSET limitations.
+
+        This method uses timestamp-based cursors instead of OFFSET, which is more efficient
+        and avoids Cloudflare D1's OFFSET limitations that cause 400 Bad Request errors.
+
+        Args:
+            limit: Maximum number of memories to return (None for all)
+            cursor: Timestamp cursor for pagination (created_at value from last result)
+            memory_type: Optional filter by memory type
+            tags: Optional filter by tags (matches ANY of the provided tags)
+
+        Returns:
+            List of Memory objects ordered by created_at DESC, starting after cursor
+        """
+        try:
+            # Build SQL query with cursor-based pagination
+            sql = "SELECT * FROM memories"
+            params = []
+            where_conditions = []
+
+            # Add cursor condition (timestamp-based pagination)
+            if cursor is not None:
+                where_conditions.append("created_at < ?")
+                params.append(cursor)
+
+            # Add memory_type filter if specified
+            if memory_type is not None:
+                where_conditions.append("memory_type = ?")
+                params.append(memory_type)
+
+            # Add tags filter if specified (using LIKE for tag matching)
+            if tags and len(tags) > 0:
+                tag_conditions = " OR ".join(["tags LIKE ?" for _ in tags])
+                where_conditions.append(f"({tag_conditions})")
+                params.extend([f"%{tag}%" for tag in tags])
+
+            # Apply WHERE clause if we have any conditions
+            if where_conditions:
+                sql += " WHERE " + " AND ".join(where_conditions)
+
+            sql += " ORDER BY created_at DESC"
+
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(limit)
+
+            payload = {"sql": sql, "params": params}
+            response = await self._retry_request("POST", f"{self.d1_url}/query", json=payload)
+            result = response.json()
+
+            if not result.get("success"):
+                raise ValueError(f"D1 query failed: {result}")
+
+            memories = []
+            if result.get("result", [{}])[0].get("results"):
+                for row in result["result"][0]["results"]:
+                    memory = await self._load_memory_from_row(row)
+                    if memory:
+                        memories.append(memory)
+
+            logger.debug(f"Retrieved {len(memories)} memories from D1 with cursor-based pagination")
+            return memories
+
+        except Exception as e:
+            logger.error(f"Error getting memories with cursor: {str(e)}")
+            return []
+
+    async def count_all_memories(self, memory_type: Optional[str] = None) -> int:
+        """
+        Get total count of memories in storage.
+
+        Args:
+            memory_type: Optional filter by memory type
+
+        Returns:
+            Total number of memories, optionally filtered by type
+        """
+        try:
+            if memory_type is not None:
+                sql = "SELECT COUNT(*) as count FROM memories WHERE memory_type = ?"
+                params = [memory_type]
+            else:
+                sql = "SELECT COUNT(*) as count FROM memories"
+                params = []
+
+            payload = {"sql": sql, "params": params}
+            response = await self._retry_request("POST", f"{self.d1_url}/query", json=payload)
+            result = response.json()
+
+            if not result.get("success"):
+                raise ValueError(f"D1 query failed: {result}")
+
+            if result.get("result", [{}])[0].get("results"):
+                count = result["result"][0]["results"][0].get("count", 0)
+                return int(count)
+
+            return 0
+
+        except Exception as e:
+            logger.error(f"Error counting memories: {str(e)}")
+            return 0
+
     async def close(self) -> None:
         """Close the storage backend and cleanup resources."""
         if self.client:
             await self.client.aclose()
             self.client = None
-        
+
         # Clear embedding cache
         self._embedding_cache.clear()
-        
+
         logger.info("Cloudflare storage backend closed")

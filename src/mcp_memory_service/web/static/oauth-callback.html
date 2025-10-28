@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OAuth Callback - MCP Memory Service</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            margin: 0;
+        }
+
+        .callback-box {
+            background: white;
+            padding: 3rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            max-width: 500px;
+        }
+
+        h1 {
+            color: #1e293b;
+            margin-bottom: 1rem;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 50px;
+            height: 50px;
+            border: 5px solid #e2e8f0;
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 2rem 0;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .message {
+            color: #64748b;
+            font-size: 1.125rem;
+            margin-top: 1rem;
+        }
+
+        .success {
+            color: #10b981;
+        }
+
+        .error {
+            color: #ef4444;
+        }
+
+        .code-display {
+            background: #f1f5f9;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+            margin: 1.5rem 0;
+            word-break: break-all;
+        }
+
+        .btn {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 1rem;
+        }
+
+        .btn:hover {
+            background: #2563eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="callback-box">
+        <h1 id="title">🔄 Processing OAuth Callback...</h1>
+        <div class="loading" id="spinner"></div>
+        <p class="message" id="message">Exchanging authorization code for access token...</p>
+        <div id="codeDisplay" style="display: none;"></div>
+        <button id="actionBtn" class="btn" style="display: none;">Continue</button>
+    </div>
+
+    <script>
+        const STORAGE_KEY = 'mcp_oauth_data';
+        const SERVER_URL = window.location.origin;
+
+        async function handleCallback() {
+            const params = new URLSearchParams(window.location.search);
+            const code = params.get('code');
+            const state = params.get('state');
+            const error = params.get('error');
+            const errorDescription = params.get('error_description');
+
+            // Handle error from authorization server
+            if (error) {
+                showError(`Authorization failed: ${errorDescription || error}`);
+                return;
+            }
+
+            if (!code) {
+                showError('No authorization code received');
+                return;
+            }
+
+            // Load saved OAuth data
+            const savedData = localStorage.getItem(STORAGE_KEY);
+            if (!savedData) {
+                showError('No OAuth client data found. Please start the login process again.');
+                return;
+            }
+
+            let oauthData;
+            try {
+                oauthData = JSON.parse(savedData);
+            } catch (e) {
+                showError('Invalid OAuth data. Please start the login process again.');
+                return;
+            }
+
+            if (!oauthData.clientId || !oauthData.clientSecret) {
+                showError('Missing client credentials. Please register again.');
+                return;
+            }
+
+            // Exchange code for token
+            try {
+                updateMessage('Exchanging authorization code for access token...');
+
+                const credentials = btoa(`${oauthData.clientId}:${oauthData.clientSecret}`);
+                const response = await fetch(`${SERVER_URL}/oauth/token`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Authorization': `Basic ${credentials}`
+                    },
+                    body: new URLSearchParams({
+                        grant_type: 'authorization_code',
+                        code: code,
+                        redirect_uri: oauthData.redirectUri
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error_description || 'Token exchange failed');
+                }
+
+                const tokenData = await response.json();
+
+                // Save token
+                oauthData.accessToken = tokenData.access_token;
+                oauthData.expiresIn = tokenData.expires_in;
+                oauthData.tokenType = tokenData.token_type;
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(oauthData));
+                sessionStorage.setItem('mcp_access_token', tokenData.access_token);
+
+                // Show success
+                showSuccess(tokenData.access_token);
+
+            } catch (error) {
+                showError(`Failed to exchange token: ${error.message}`);
+            }
+        }
+
+        function updateMessage(msg) {
+            document.getElementById('message').textContent = msg;
+        }
+
+        function showSuccess(token) {
+            document.getElementById('spinner').style.display = 'none';
+            document.getElementById('title').textContent = '✅ Authentication Successful!';
+            document.getElementById('message').className = 'message success';
+            document.getElementById('message').textContent = 'Your access token has been saved. Redirecting to dashboard...';
+
+            // Auto-redirect to dashboard after 2 seconds
+            setTimeout(() => {
+                window.location.href = '/';
+            }, 2000);
+
+            // Show manual button as backup
+            const btn = document.getElementById('actionBtn');
+            btn.style.display = 'inline-block';
+            btn.textContent = 'Go to Dashboard';
+            btn.onclick = () => window.location.href = '/';
+        }
+
+        function showError(errorMsg) {
+            document.getElementById('spinner').style.display = 'none';
+            document.getElementById('title').textContent = '❌ Authentication Failed';
+            document.getElementById('message').className = 'message error';
+            document.getElementById('message').textContent = errorMsg;
+
+            const btn = document.getElementById('actionBtn');
+            btn.style.display = 'inline-block';
+            btn.textContent = 'Try Again';
+            btn.onclick = () => window.location.href = '/oauth-login.html';
+        }
+
+        // Start processing
+        window.onload = handleCallback;
+    </script>
+</body>
+</html>

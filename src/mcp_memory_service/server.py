@@ -53,7 +53,8 @@ def detect_mcp_client():
                     return 'claude_desktop'
                 if 'lmstudio' in cmdline_str or 'lm-studio' in cmdline_str:
                     return 'lm_studio'
-            except:
+            except (OSError, IndexError, AttributeError) as e:
+                logger.debug(f"Could not detect client from process: {e}")
                 pass
         
         # Fallback: check environment variables
@@ -177,7 +178,6 @@ from . import __version__
 from .lm_studio_compat import patch_mcp_for_lm_studio, add_windows_timeout_handling
 from .dependency_check import run_dependency_check, get_recommended_timeout
 from .config import (
-    CHROMA_PATH,
     BACKUPS_PATH,
     SERVER_NAME,
     SERVER_VERSION,
@@ -196,7 +196,11 @@ from .config import (
     CLOUDFLARE_EMBEDDING_MODEL,
     CLOUDFLARE_LARGE_CONTENT_THRESHOLD,
     CLOUDFLARE_MAX_RETRIES,
-    CLOUDFLARE_BASE_DELAY
+    CLOUDFLARE_BASE_DELAY,
+    # Hybrid backend configuration
+    HYBRID_SYNC_INTERVAL,
+    HYBRID_BATCH_SIZE,
+    HYBRID_SYNC_ON_STARTUP
 )
 # Storage imports will be done conditionally in the server class
 from .models.memory import Memory
@@ -206,6 +210,7 @@ from .utils.system_detection import (
     print_system_diagnostics,
     AcceleratorType
 )
+from .services.memory_service import MemoryService
 from .utils.time_parser import extract_time_expression, parse_time_expression
 
 # Consolidation system imports (conditional)
@@ -219,7 +224,7 @@ if CONSOLIDATION_ENABLED:
 # Configure performance-critical module logging
 if not os.getenv('DEBUG_MODE'):
     # Set higher log levels for performance-critical modules
-    for module_name in ['chromadb', 'sentence_transformers', 'transformers', 'torch', 'numpy']:
+    for module_name in ['sentence_transformers', 'transformers', 'torch', 'numpy']:
         logging.getLogger(module_name).setLevel(logging.WARNING)
 
 # Check if UV is being used
@@ -267,9 +272,11 @@ def configure_environment():
     # For systems with limited memory, reduce cache sizes
     if system_info.memory_gb < 8:
         logger.info("Configuring for low-memory system")
-        os.environ["TRANSFORMERS_CACHE"] = os.path.join(os.path.dirname(CHROMA_PATH), "model_cache")
-        os.environ["HF_HOME"] = os.path.join(os.path.dirname(CHROMA_PATH), "hf_cache")
-        os.environ["SENTENCE_TRANSFORMERS_HOME"] = os.path.join(os.path.dirname(CHROMA_PATH), "st_cache")
+        # Use BACKUPS_PATH parent directory for model caches
+        cache_base = os.path.dirname(BACKUPS_PATH)
+        os.environ["TRANSFORMERS_CACHE"] = os.path.join(cache_base, "model_cache")
+        os.environ["HF_HOME"] = os.path.join(cache_base, "hf_cache")
+        os.environ["SENTENCE_TRANSFORMERS_HOME"] = os.path.join(cache_base, "st_cache")
 
 # Configure environment before any imports that might use it
 configure_environment()
@@ -324,19 +331,19 @@ class MemoryServer:
         try:
             # Initialize paths
             logger.info(f"Creating directories if they don't exist...")
-            os.makedirs(CHROMA_PATH, exist_ok=True)
             os.makedirs(BACKUPS_PATH, exist_ok=True)
-            
+
             # Log system diagnostics
             logger.info(f"Initializing on {platform.system()} {platform.machine()} with Python {platform.python_version()}")
             logger.info(f"Using accelerator: {self.system_info.accelerator}")
-            
-            # DEFER CHROMADB INITIALIZATION - Initialize storage lazily when needed
+
+            # DEFER STORAGE INITIALIZATION - Initialize storage lazily when needed
             # This prevents hanging during server startup due to embedding model loading
             logger.info(f"Deferring {STORAGE_BACKEND} storage initialization to prevent hanging")
             if MCP_CLIENT == 'lm_studio':
                 print(f"Deferring {STORAGE_BACKEND} storage initialization to prevent startup hanging", file=sys.stdout, flush=True)
             self.storage = None
+            self.memory_service = None
             self._storage_initialized = False
 
         except Exception as e:
@@ -345,6 +352,7 @@ class MemoryServer:
             
             # Set storage to None to prevent any hanging
             self.storage = None
+            self.memory_service = None
             self._storage_initialized = False
         
         # Register handlers
@@ -413,7 +421,18 @@ class MemoryServer:
     async def _initialize_storage_with_timeout(self):
         """Initialize storage with timeout and caching optimization."""
         try:
-            logger.info(f"Attempting eager {STORAGE_BACKEND} storage initialization...")
+            logger.info(f"🚀 EAGER INIT: Starting {STORAGE_BACKEND} storage initialization...")
+            logger.info(f"🔧 EAGER INIT: Environment check - STORAGE_BACKEND={STORAGE_BACKEND}")
+            
+            # Log all Cloudflare config values for debugging
+            if STORAGE_BACKEND == 'cloudflare':
+                logger.info(f"🔧 EAGER INIT: Cloudflare config validation:")
+                logger.info(f"   API_TOKEN: {'SET' if CLOUDFLARE_API_TOKEN else 'NOT SET'}")
+                logger.info(f"   ACCOUNT_ID: {CLOUDFLARE_ACCOUNT_ID}")
+                logger.info(f"   VECTORIZE_INDEX: {CLOUDFLARE_VECTORIZE_INDEX}")
+                logger.info(f"   D1_DATABASE_ID: {CLOUDFLARE_D1_DATABASE_ID}")
+                logger.info(f"   R2_BUCKET: {CLOUDFLARE_R2_BUCKET}")
+                logger.info(f"   EMBEDDING_MODEL: {CLOUDFLARE_EMBEDDING_MODEL}")
             
             if STORAGE_BACKEND == 'sqlite_vec':
                 # Check for multi-client coordination mode
@@ -421,13 +440,13 @@ class MemoryServer:
                 coordinator = ServerCoordinator()
                 coordination_mode = await coordinator.detect_mode()
                 
-                logger.info(f"Eager init - detected coordination mode: {coordination_mode}")
+                logger.info(f"🔧 EAGER INIT: SQLite-vec - detected coordination mode: {coordination_mode}")
                 
                 if coordination_mode == "http_client":
                     # Use HTTP client to connect to existing server
                     from .storage.http_client import HTTPClientStorage
                     self.storage = HTTPClientStorage()
-                    logger.info(f"Eager init - using HTTP client storage")
+                    logger.info(f"✅ EAGER INIT: Using HTTP client storage")
                 elif coordination_mode == "http_server":
                     # Try to auto-start HTTP server for coordination
                     from .utils.http_server_manager import auto_start_http_server_if_needed
@@ -438,7 +457,7 @@ class MemoryServer:
                         await asyncio.sleep(2)
                         from .storage.http_client import HTTPClientStorage
                         self.storage = HTTPClientStorage()
-                        logger.info(f"Eager init - started HTTP server and using HTTP client storage")
+                        logger.info(f"✅ EAGER INIT: Started HTTP server and using HTTP client storage")
                     else:
                         # Fall back to direct SQLite-vec storage
                         from . import storage
@@ -446,7 +465,7 @@ class MemoryServer:
                         storage_module = importlib.import_module('mcp_memory_service.storage.sqlite_vec')
                         SqliteVecMemoryStorage = storage_module.SqliteVecMemoryStorage
                         self.storage = SqliteVecMemoryStorage(SQLITE_VEC_PATH)
-                        logger.info(f"Eager init - HTTP server auto-start failed, using direct storage")
+                        logger.info(f"✅ EAGER INIT: HTTP server auto-start failed, using direct SQLite-vec storage")
                 else:
                     # Import sqlite-vec storage module (supports dynamic class replacement)
                     from . import storage
@@ -454,22 +473,83 @@ class MemoryServer:
                     storage_module = importlib.import_module('mcp_memory_service.storage.sqlite_vec')
                     SqliteVecMemoryStorage = storage_module.SqliteVecMemoryStorage
                     self.storage = SqliteVecMemoryStorage(SQLITE_VEC_PATH)
+                    logger.info(f"✅ EAGER INIT: Using direct SQLite-vec storage at {SQLITE_VEC_PATH}")
+            elif STORAGE_BACKEND == 'cloudflare':
+                # Initialize Cloudflare storage
+                logger.info(f"☁️  EAGER INIT: Importing CloudflareStorage...")
+                from .storage.cloudflare import CloudflareStorage
+                logger.info(f"☁️  EAGER INIT: Creating CloudflareStorage instance...")
+                self.storage = CloudflareStorage(
+                    api_token=CLOUDFLARE_API_TOKEN,
+                    account_id=CLOUDFLARE_ACCOUNT_ID,
+                    vectorize_index=CLOUDFLARE_VECTORIZE_INDEX,
+                    d1_database_id=CLOUDFLARE_D1_DATABASE_ID,
+                    r2_bucket=CLOUDFLARE_R2_BUCKET,
+                    embedding_model=CLOUDFLARE_EMBEDDING_MODEL,
+                    large_content_threshold=CLOUDFLARE_LARGE_CONTENT_THRESHOLD,
+                    max_retries=CLOUDFLARE_MAX_RETRIES,
+                    base_delay=CLOUDFLARE_BASE_DELAY
+                )
+                logger.info(f"✅ EAGER INIT: CloudflareStorage instance created with index: {CLOUDFLARE_VECTORIZE_INDEX}")
+            elif STORAGE_BACKEND == 'hybrid':
+                # Initialize Hybrid storage (SQLite-vec + Cloudflare)
+                logger.info(f"🔄 EAGER INIT: Using Hybrid storage...")
+                from .storage.hybrid import HybridMemoryStorage
+
+                # Prepare Cloudflare configuration dict
+                cloudflare_config = None
+                if all([CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_VECTORIZE_INDEX, CLOUDFLARE_D1_DATABASE_ID]):
+                    cloudflare_config = {
+                        'api_token': CLOUDFLARE_API_TOKEN,
+                        'account_id': CLOUDFLARE_ACCOUNT_ID,
+                        'vectorize_index': CLOUDFLARE_VECTORIZE_INDEX,
+                        'd1_database_id': CLOUDFLARE_D1_DATABASE_ID,
+                        'r2_bucket': CLOUDFLARE_R2_BUCKET,
+                        'embedding_model': CLOUDFLARE_EMBEDDING_MODEL,
+                        'large_content_threshold': CLOUDFLARE_LARGE_CONTENT_THRESHOLD,
+                        'max_retries': CLOUDFLARE_MAX_RETRIES,
+                        'base_delay': CLOUDFLARE_BASE_DELAY
+                    }
+                    logger.info(f"🔄 EAGER INIT: Cloudflare config prepared for hybrid storage")
+                else:
+                    logger.warning("🔄 EAGER INIT: Incomplete Cloudflare config, hybrid will run in SQLite-only mode")
+
+                self.storage = HybridMemoryStorage(
+                    sqlite_db_path=SQLITE_VEC_PATH,
+                    embedding_model="all-MiniLM-L6-v2",
+                    cloudflare_config=cloudflare_config,
+                    sync_interval=HYBRID_SYNC_INTERVAL or 300,
+                    batch_size=HYBRID_BATCH_SIZE or 50
+                )
+                logger.info(f"✅ EAGER INIT: HybridMemoryStorage instance created")
             else:
-                # Initialize ChromaDB with preload_model=True for caching
-                from .storage.chroma import ChromaMemoryStorage
-                self.storage = ChromaMemoryStorage(CHROMA_PATH, preload_model=True)
-            
+                # Unknown backend - should not reach here due to factory validation
+                logger.error(f"❌ EAGER INIT: Unknown storage backend: {STORAGE_BACKEND}")
+                raise ValueError(f"Unsupported storage backend: {STORAGE_BACKEND}")
+
             # Initialize the storage backend
+            logger.info(f"🔧 EAGER INIT: Calling storage.initialize()...")
             await self.storage.initialize()
-            self._storage_initialized = True
-            logger.info(f"Eager {STORAGE_BACKEND} storage initialization successful")
+            logger.info(f"✅ EAGER INIT: storage.initialize() completed successfully")
             
+            self._storage_initialized = True
+            logger.info(f"🎉 EAGER INIT: {STORAGE_BACKEND} storage initialization successful")
+
+            # Initialize MemoryService with shared business logic
+            self.memory_service = MemoryService(self.storage)
+            logger.info(f"✅ EAGER INIT: MemoryService initialized with {STORAGE_BACKEND} storage")
+
+            # Verify storage type
+            storage_type = self.storage.__class__.__name__
+            logger.info(f"🔍 EAGER INIT: Final storage type verification: {storage_type}")
+
             # Initialize consolidation system after storage is ready
             await self._initialize_consolidation()
             
             return True
         except Exception as e:
-            logger.error(f"Eager storage initialization failed: {str(e)}")
+            logger.error(f"❌ EAGER INIT: Storage initialization failed: {str(e)}")
+            logger.error(f"📋 EAGER INIT: Full traceback:")
             logger.error(traceback.format_exc())
             return False
 
@@ -477,7 +557,18 @@ class MemoryServer:
         """Lazily initialize storage backend when needed."""
         if not self._storage_initialized:
             try:
-                logger.info(f"Initializing {STORAGE_BACKEND} storage backend...")
+                logger.info(f"🔄 LAZY INIT: Starting {STORAGE_BACKEND} storage initialization...")
+                logger.info(f"🔧 LAZY INIT: Environment check - STORAGE_BACKEND={STORAGE_BACKEND}")
+                
+                # Log all Cloudflare config values for debugging
+                if STORAGE_BACKEND == 'cloudflare':
+                    logger.info(f"🔧 LAZY INIT: Cloudflare config validation:")
+                    logger.info(f"   API_TOKEN: {'SET' if CLOUDFLARE_API_TOKEN else 'NOT SET'}")
+                    logger.info(f"   ACCOUNT_ID: {CLOUDFLARE_ACCOUNT_ID}")
+                    logger.info(f"   VECTORIZE_INDEX: {CLOUDFLARE_VECTORIZE_INDEX}")
+                    logger.info(f"   D1_DATABASE_ID: {CLOUDFLARE_D1_DATABASE_ID}")
+                    logger.info(f"   R2_BUCKET: {CLOUDFLARE_R2_BUCKET}")
+                    logger.info(f"   EMBEDDING_MODEL: {CLOUDFLARE_EMBEDDING_MODEL}")
                 
                 if STORAGE_BACKEND == 'sqlite_vec':
                     # Check for multi-client coordination mode
@@ -485,13 +576,13 @@ class MemoryServer:
                     coordinator = ServerCoordinator()
                     coordination_mode = await coordinator.detect_mode()
                     
-                    logger.info(f"Detected coordination mode: {coordination_mode}")
+                    logger.info(f"🔧 LAZY INIT: SQLite-vec - detected coordination mode: {coordination_mode}")
                     
                     if coordination_mode == "http_client":
                         # Use HTTP client to connect to existing server
                         from .storage.http_client import HTTPClientStorage
                         self.storage = HTTPClientStorage()
-                        logger.info(f"Using HTTP client storage to connect to existing server")
+                        logger.info(f"✅ LAZY INIT: Using HTTP client storage")
                     elif coordination_mode == "http_server":
                         # Try to auto-start HTTP server for coordination
                         from .utils.http_server_manager import auto_start_http_server_if_needed
@@ -502,24 +593,26 @@ class MemoryServer:
                             await asyncio.sleep(2)
                             from .storage.http_client import HTTPClientStorage
                             self.storage = HTTPClientStorage()
-                            logger.info(f"Started HTTP server and using HTTP client storage")
+                            logger.info(f"✅ LAZY INIT: Started HTTP server and using HTTP client storage")
                         else:
                             # Fall back to direct SQLite-vec storage
                             import importlib
                             storage_module = importlib.import_module('mcp_memory_service.storage.sqlite_vec')
                             SqliteVecMemoryStorage = storage_module.SqliteVecMemoryStorage
                             self.storage = SqliteVecMemoryStorage(SQLITE_VEC_PATH)
-                            logger.info(f"HTTP server auto-start failed, using direct SQLite-vec storage at: {SQLITE_VEC_PATH}")
+                            logger.info(f"✅ LAZY INIT: HTTP server auto-start failed, using direct SQLite-vec storage at: {SQLITE_VEC_PATH}")
                     else:
                         # Use direct SQLite-vec storage (with WAL mode for concurrent access)
                         import importlib
                         storage_module = importlib.import_module('mcp_memory_service.storage.sqlite_vec')
                         SqliteVecMemoryStorage = storage_module.SqliteVecMemoryStorage
                         self.storage = SqliteVecMemoryStorage(SQLITE_VEC_PATH)
-                        logger.info(f"Created SQLite-vec storage at: {SQLITE_VEC_PATH}")
+                        logger.info(f"✅ LAZY INIT: Created SQLite-vec storage at: {SQLITE_VEC_PATH}")
                 elif STORAGE_BACKEND == 'cloudflare':
                     # Cloudflare backend using Vectorize, D1, and R2
+                    logger.info(f"☁️  LAZY INIT: Importing CloudflareStorage...")
                     from .storage.cloudflare import CloudflareStorage
+                    logger.info(f"☁️  LAZY INIT: Creating CloudflareStorage instance...")
                     self.storage = CloudflareStorage(
                         api_token=CLOUDFLARE_API_TOKEN,
                         account_id=CLOUDFLARE_ACCOUNT_ID,
@@ -531,54 +624,78 @@ class MemoryServer:
                         max_retries=CLOUDFLARE_MAX_RETRIES,
                         base_delay=CLOUDFLARE_BASE_DELAY
                     )
-                    logger.info(f"Created Cloudflare storage with Vectorize index: {CLOUDFLARE_VECTORIZE_INDEX}")
+                    logger.info(f"✅ LAZY INIT: Created Cloudflare storage with Vectorize index: {CLOUDFLARE_VECTORIZE_INDEX}")
+                elif STORAGE_BACKEND == 'hybrid':
+                    # Hybrid backend using SQLite-vec as primary and Cloudflare as secondary
+                    logger.info(f"🔄 LAZY INIT: Importing HybridMemoryStorage...")
+                    from .storage.hybrid import HybridMemoryStorage
+
+                    # Prepare Cloudflare configuration dict
+                    cloudflare_config = None
+                    if all([CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_VECTORIZE_INDEX, CLOUDFLARE_D1_DATABASE_ID]):
+                        cloudflare_config = {
+                            'api_token': CLOUDFLARE_API_TOKEN,
+                            'account_id': CLOUDFLARE_ACCOUNT_ID,
+                            'vectorize_index': CLOUDFLARE_VECTORIZE_INDEX,
+                            'd1_database_id': CLOUDFLARE_D1_DATABASE_ID,
+                            'r2_bucket': CLOUDFLARE_R2_BUCKET,
+                            'embedding_model': CLOUDFLARE_EMBEDDING_MODEL,
+                            'large_content_threshold': CLOUDFLARE_LARGE_CONTENT_THRESHOLD,
+                            'max_retries': CLOUDFLARE_MAX_RETRIES,
+                            'base_delay': CLOUDFLARE_BASE_DELAY
+                        }
+                        logger.info(f"🔄 LAZY INIT: Cloudflare config prepared for hybrid storage")
+                    else:
+                        logger.warning("🔄 LAZY INIT: Incomplete Cloudflare config, hybrid will run in SQLite-only mode")
+
+                    logger.info(f"🔄 LAZY INIT: Creating HybridMemoryStorage instance...")
+                    self.storage = HybridMemoryStorage(
+                        sqlite_db_path=SQLITE_VEC_PATH,
+                        embedding_model="all-MiniLM-L6-v2",
+                        cloudflare_config=cloudflare_config,
+                        sync_interval=HYBRID_SYNC_INTERVAL or 300,
+                        batch_size=HYBRID_BATCH_SIZE or 50
+                    )
+                    logger.info(f"✅ LAZY INIT: Created Hybrid storage at: {SQLITE_VEC_PATH} with Cloudflare sync")
                 else:
-                    # ChromaDB backend (deprecated) - Check for migration
-                    logger.warning("=" * 70)
-                    logger.warning("DEPRECATION WARNING: ChromaDB backend is deprecated!")
-                    logger.warning("ChromaDB will be removed in v6.0.0.")
-                    logger.warning("Please migrate to SQLite-vec for better performance and reliability.")
-                    logger.warning("To migrate your data, run: python scripts/migrate_to_sqlite_vec.py")
-                    logger.warning("=" * 70)
-                    
-                    # Check if ChromaDB has existing data
-                    if os.path.exists(CHROMA_PATH) and os.listdir(CHROMA_PATH):
-                        logger.warning("")
-                        logger.warning("MIGRATION RECOMMENDED: Existing ChromaDB data detected!")
-                        logger.warning("Your memories are stored in the deprecated ChromaDB format.")
-                        logger.warning("")
-                        logger.warning("To migrate now (recommended):")
-                        logger.warning("  1. Stop this server (Ctrl+C)")
-                        logger.warning("  2. Run: python scripts/migrate_to_sqlite_vec.py")
-                        logger.warning("  3. Set environment: export MCP_MEMORY_STORAGE_BACKEND=sqlite_vec")
-                        logger.warning("  4. Restart the server")
-                        logger.warning("")
-                        logger.warning("Continuing with ChromaDB for now...")
-                        logger.warning("")
-                    
-                    from .storage.chroma import ChromaMemoryStorage
-                    self.storage = ChromaMemoryStorage(CHROMA_PATH, preload_model=False)
-                    logger.info(f"Created ChromaDB storage at: {CHROMA_PATH}")
+                    # Unknown/unsupported backend
+                    logger.error("=" * 70)
+                    logger.error(f"❌ LAZY INIT: Unsupported storage backend: {STORAGE_BACKEND}")
+                    logger.error("")
+                    logger.error("Supported backends:")
+                    logger.error("  - sqlite_vec (recommended for single-device use)")
+                    logger.error("  - cloudflare (cloud storage)")
+                    logger.error("  - hybrid (recommended for multi-device use)")
+                    logger.error("=" * 70)
+                    raise ValueError(
+                        f"Unsupported storage backend: {STORAGE_BACKEND}. "
+                        "Use 'sqlite_vec', 'cloudflare', or 'hybrid'."
+                    )
                 
                 # Initialize the storage backend
+                logger.info(f"🔧 LAZY INIT: Calling storage.initialize()...")
                 await self.storage.initialize()
+                logger.info(f"✅ LAZY INIT: storage.initialize() completed successfully")
                 
                 # Verify the storage is properly initialized
                 if hasattr(self.storage, 'is_initialized') and not self.storage.is_initialized():
                     # Get detailed status for debugging
                     if hasattr(self.storage, 'get_initialization_status'):
                         status = self.storage.get_initialization_status()
-                        logger.error(f"Storage initialization incomplete: {status}")
+                        logger.error(f"❌ LAZY INIT: Storage initialization incomplete: {status}")
                     raise RuntimeError("Storage initialization incomplete")
                 
                 self._storage_initialized = True
-                logger.info(f"Storage backend ({STORAGE_BACKEND}) initialization successful")
+                storage_type = self.storage.__class__.__name__
+                logger.info(f"🎉 LAZY INIT: Storage backend ({STORAGE_BACKEND}) initialization successful")
+                logger.info(f"🔍 LAZY INIT: Final storage type verification: {storage_type}")
                 
                 # Initialize consolidation system after storage is ready
                 await self._initialize_consolidation()
                 
             except Exception as e:
-                logger.error(f"Failed to initialize {STORAGE_BACKEND} storage: {str(e)}")
+                logger.error(f"❌ LAZY INIT: Failed to initialize {STORAGE_BACKEND} storage: {str(e)}")
+                logger.error(f"📋 LAZY INIT: Full traceback:")
                 logger.error(traceback.format_exc())
                 # Set storage to None to indicate failure
                 self.storage = None
@@ -590,7 +707,7 @@ class MemoryServer:
         """Async initialization method with eager storage initialization and timeout."""
         try:
             # Run any async initialization tasks here
-            logger.info("Starting async initialization...")
+            logger.info("🚀 SERVER INIT: Starting async initialization...")
             
             # Print system diagnostics only for LM Studio (avoid JSON parsing errors in Claude Desktop)
             if MCP_CLIENT == 'lm_studio':
@@ -601,9 +718,13 @@ class MemoryServer:
                 print(f"Accelerator: {self.system_info.accelerator}", file=sys.stdout, flush=True)
                 print(f"Python: {platform.python_version()}", file=sys.stdout, flush=True)
             
+            # Log environment info
+            logger.info(f"🔧 SERVER INIT: Environment - STORAGE_BACKEND={STORAGE_BACKEND}")
+            
             # Attempt eager storage initialization with timeout
             # Get dynamic timeout based on system and dependency status
             timeout_seconds = get_recommended_timeout()
+            logger.info(f"⏱️  SERVER INIT: Attempting eager storage initialization (timeout: {timeout_seconds}s)...")
             if MCP_CLIENT == 'lm_studio':
                 print(f"Attempting eager storage initialization (timeout: {timeout_seconds}s)...", file=sys.stdout, flush=True)
             try:
@@ -612,22 +733,32 @@ class MemoryServer:
                 if success:
                     if MCP_CLIENT == 'lm_studio':
                         print("[OK] Eager storage initialization successful", file=sys.stdout, flush=True)
-                    logger.info("Eager storage initialization completed successfully")
+                    logger.info("✅ SERVER INIT: Eager storage initialization completed successfully")
+                    
+                    # Verify storage type after successful eager init
+                    if hasattr(self, 'storage') and self.storage:
+                        storage_type = self.storage.__class__.__name__
+                        logger.info(f"🔍 SERVER INIT: Eager init resulted in storage type: {storage_type}")
                 else:
                     if MCP_CLIENT == 'lm_studio':
                         print("[WARNING] Eager storage initialization failed, will use lazy loading", file=sys.stdout, flush=True)
-                    logger.warning("Eager initialization failed, falling back to lazy loading")
+                    logger.warning("⚠️  SERVER INIT: Eager initialization failed, falling back to lazy loading")
+                    # Reset state for lazy loading
+                    self.storage = None
+                    self._storage_initialized = False
             except asyncio.TimeoutError:
                 if MCP_CLIENT == 'lm_studio':
                     print("[TIMEOUT] Eager storage initialization timed out, will use lazy loading", file=sys.stdout, flush=True)
-                logger.warning("Storage initialization timed out, falling back to lazy loading")
+                logger.warning(f"⏱️  SERVER INIT: Storage initialization timed out after {timeout_seconds}s, falling back to lazy loading")
                 # Reset state for lazy loading
                 self.storage = None
                 self._storage_initialized = False
             except Exception as e:
                 if MCP_CLIENT == 'lm_studio':
                     print(f"[WARNING] Eager initialization error: {str(e)}, will use lazy loading", file=sys.stdout, flush=True)
-                logger.warning(f"Eager initialization error: {str(e)}, falling back to lazy loading")
+                logger.warning(f"⚠️  SERVER INIT: Eager initialization error: {str(e)}, falling back to lazy loading")
+                logger.warning(f"📋 SERVER INIT: Eager init error traceback:")
+                logger.warning(traceback.format_exc())
                 # Reset state for lazy loading
                 self.storage = None
                 self._storage_initialized = False
@@ -636,9 +767,11 @@ class MemoryServer:
             if MCP_CLIENT == 'lm_studio':
                 print("MCP Memory Service initialization completed", file=sys.stdout, flush=True)
             
+            logger.info("🎉 SERVER INIT: Async initialization completed")
             return True
         except Exception as e:
-            logger.error(f"Async initialization error: {str(e)}")
+            logger.error(f"❌ SERVER INIT: Async initialization error: {str(e)}")
+            logger.error(f"📋 SERVER INIT: Full traceback:")
             logger.error(traceback.format_exc())
             # Add explicit console error output for Smithery to see
             print(f"Initialization error: {str(e)}", file=sys.stderr, flush=True)
@@ -757,8 +890,12 @@ class MemoryServer:
                         description=f"All memories with tag '{tag}'",
                         mimeType="application/json"
                     ))
-            except:
-                pass  # If get_all_tags not available, skip
+            except AttributeError:
+                # get_all_tags method not available on this storage backend
+                pass
+            except Exception as e:
+                logger.warning(f"Failed to load tag resources: {e}")
+                pass
             
             return resources
         
@@ -1188,9 +1325,22 @@ class MemoryServer:
                                     "description": "Optional metadata about the memory, including tags and type.",
                                     "properties": {
                                         "tags": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                            "description": "Tags to categorize the memory as an array of strings. If you have a comma-separated string, convert it to an array before calling."
+                                            "oneOf": [
+                                                {
+                                                    "type": "array",
+                                                    "items": {"type": "string"},
+                                                    "description": "Tags as an array of strings"
+                                                },
+                                                {
+                                                    "type": "string",
+                                                    "description": "Tags as comma-separated string"
+                                                }
+                                            ],
+                                            "description": "Tags to categorize the memory. Accepts either an array of strings or a comma-separated string.",
+                                            "examples": [
+                                                "tag1,tag2,tag3",
+                                                ["tag1", "tag2", "tag3"]
+                                            ]
                                         },
                                         "type": {
                                             "type": "string",
@@ -1374,33 +1524,6 @@ class MemoryServer:
                         }
                     ),
                     types.Tool(
-                        name="get_embedding",
-                        description="""Get raw embedding vector for content.
-
-                        Example:
-                        {
-                            "content": "text to embed"
-                        }""",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "content": {
-                                    "type": "string",
-                                    "description": "Text content to generate an embedding vector for."
-                                }
-                            },
-                            "required": ["content"]
-                        }
-                    ),
-                    types.Tool(
-                        name="check_embedding_model",
-                        description="Check if embedding model is loaded and working",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {}
-                        }
-                    ),
-                    types.Tool(
                         name="debug_retrieve",
                         description="""Retrieve memories with debug information.
 
@@ -1445,6 +1568,25 @@ class MemoryServer:
                                 "content": {
                                     "type": "string",
                                     "description": "Exact content string to match against stored memories."
+                                }
+                            },
+                            "required": ["content"]
+                        }
+                    ),
+                    types.Tool(
+                        name="get_raw_embedding",
+                        description="""Get raw embedding vector for debugging purposes.
+
+                        Example:
+                        {
+                            "content": "text to embed"
+                        }""",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string",
+                                    "description": "Content to generate embedding for."
                                 }
                             },
                             "required": ["content"]
@@ -1539,93 +1681,6 @@ class MemoryServer:
                                 "tag": {"type": "string"}
                             },
                             "required": ["before_date"]
-                        }
-                    ),
-                    types.Tool(
-                        name="dashboard_check_health",
-                        description="Dashboard: Retrieve basic database health status, returns JSON.",
-                        inputSchema={"type": "object", "properties": {}}
-                    ),
-                    types.Tool(
-                        name="dashboard_recall_memory",
-                        description="Dashboard: Recall memories by time expressions and return JSON format.",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "Natural language query specifying the time frame or content to recall."
-                                },
-                                "n_results": {
-                                    "type": "number",
-                                    "default": 5,
-                                    "description": "Maximum number of results to return."
-                                }
-                            },
-                            "required": ["query"]
-                        }
-                    ),
-                    types.Tool(
-                        name="dashboard_retrieve_memory",
-                        description="Dashboard: Retrieve memories and return JSON format.",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "Search query to find relevant memories based on content."
-                                },
-                                "n_results": {
-                                    "type": "number",
-                                    "default": 5,
-                                    "description": "Maximum number of results to return."
-                                }
-                            },
-                            "required": ["query"]
-                        }
-                    ),
-                    types.Tool(
-                        name="dashboard_search_by_tag",
-                        description="Dashboard: Search memories by tags and return JSON format.",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "tags": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "List of tags to search for. Returns memories matching ANY of these tags."
-                                }
-                            },
-                            "required": ["tags"]
-                        }
-                    ),
-                    types.Tool(
-                        name="dashboard_get_stats",
-                        description="Dashboard: Get database statistics and return JSON format.",
-                        inputSchema={"type": "object", "properties": {}}
-                    ),
-                    types.Tool(
-                        name="dashboard_optimize_db",
-                        description="Dashboard: Optimize database and return JSON format.",
-                        inputSchema={"type": "object", "properties": {}}
-                    ),
-                    types.Tool(
-                        name="dashboard_create_backup",
-                        description="Dashboard: Create database backup and return JSON format.",
-                        inputSchema={"type": "object", "properties": {}}
-                    ),
-                    types.Tool(
-                        name="dashboard_delete_memory",
-                        description="Dashboard: Delete a specific memory by ID and return JSON format.",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "memory_id": {
-                                    "type": "string",
-                                    "description": "The ID (content hash) of the memory to delete."
-                                }
-                            },
-                            "required": ["memory_id"]
                         }
                     ),
                     types.Tool(
@@ -1979,14 +2034,12 @@ class MemoryServer:
                     return await self.handle_delete_by_all_tags(arguments)
                 elif name == "cleanup_duplicates":
                     return await self.handle_cleanup_duplicates(arguments)
-                elif name == "get_embedding":
-                    return await self.handle_get_embedding(arguments)
-                elif name == "check_embedding_model":
-                    return await self.handle_check_embedding_model(arguments)
                 elif name == "debug_retrieve":
                     return await self.handle_debug_retrieve(arguments)
                 elif name == "exact_match_retrieve":
                     return await self.handle_exact_match_retrieve(arguments)
+                elif name == "get_raw_embedding":
+                    return await self.handle_get_raw_embedding(arguments)
                 elif name == "check_database_health":
                     logger.info("Calling handle_check_database_health")
                     return await self.handle_check_database_health(arguments)
@@ -1996,30 +2049,6 @@ class MemoryServer:
                     return await self.handle_delete_by_timeframe(arguments)
                 elif name == "delete_before_date":
                     return await self.handle_delete_before_date(arguments)
-                elif name == "dashboard_check_health":
-                    logger.info("Calling handle_dashboard_check_health")
-                    return await self.handle_dashboard_check_health(arguments)
-                elif name == "dashboard_recall_memory":
-                    logger.info("Calling handle_dashboard_recall_memory")
-                    return await self.handle_dashboard_recall_memory(arguments)
-                elif name == "dashboard_retrieve_memory":
-                    logger.info("Calling handle_dashboard_retrieve_memory")
-                    return await self.handle_dashboard_retrieve_memory(arguments)
-                elif name == "dashboard_search_by_tag":
-                    logger.info("Calling handle_dashboard_search_by_tag")
-                    return await self.handle_dashboard_search_by_tag(arguments)
-                elif name == "dashboard_get_stats":
-                    logger.info("Calling handle_dashboard_get_stats")
-                    return await self.handle_dashboard_get_stats(arguments)
-                elif name == "dashboard_optimize_db":
-                    logger.info("Calling handle_dashboard_optimize_db")
-                    return await self.handle_dashboard_optimize_db(arguments)
-                elif name == "dashboard_create_backup":
-                    logger.info("Calling handle_dashboard_create_backup")
-                    return await self.handle_dashboard_create_backup(arguments)
-                elif name == "dashboard_delete_memory":
-                    logger.info("Calling handle_dashboard_delete_memory")
-                    return await self.handle_dashboard_delete_memory(arguments)
                 elif name == "update_memory_metadata":
                     logger.info("Calling handle_update_memory_metadata")
                     return await self.handle_update_memory_metadata(arguments)
@@ -2060,525 +2089,34 @@ class MemoryServer:
                 print(f"ERROR in tool execution: {error_msg}", file=sys.stderr, flush=True)
                 return [types.TextContent(type="text", text=f"Error: {str(e)}")]
 
-    async def handle_dashboard_check_health(self, arguments: dict) -> List[types.TextContent]:
-        logger.info("=== EXECUTING DASHBOARD_CHECK_HEALTH ===")
-        try:
-            # Get real average query time from tracked operations
-            avg_query_time = self.get_average_query_time()
-            
-            # Return actual health status with real query time data
-            health_status = {
-                "status": "healthy",  # Server is running if we reach this point
-                "health": 100,
-                "avg_query_time": avg_query_time
-            }
-            logger.info(f"Health status with real query time: {health_status}")
-            result = json.dumps(health_status)
-            logger.info(f"Returning JSON: {result}")
-            return [types.TextContent(type="text", text=result)]
-        except Exception as e:
-            logger.error(f"Error in dashboard_check_health: {str(e)}\n{traceback.format_exc()}")
-            return [types.TextContent(type="text", text=json.dumps({"status": "unhealthy", "health": 0, "error": str(e)}))]
-
-    async def handle_dashboard_recall_memory(self, arguments: dict) -> List[types.TextContent]:
-        """Dashboard version of recall_memory that returns JSON."""
-        logger.info("=== EXECUTING DASHBOARD_RECALL_MEMORY ===")
-        start_time = time.time()
-        try:
-            query = arguments.get("query", "")
-            n_results = arguments.get("n_results", 5)
-            
-            if not query:
-                result = {"error": "Query is required", "memories": []}
-                return [types.TextContent(type="text", text=json.dumps(result))]
-            
-            # Initialize storage lazily when needed
-            storage = await self._ensure_storage_initialized()
-            
-            # Parse natural language time expressions (using the same logic as recall_memory)
-            from .utils.time_parser import extract_time_expression, parse_time_expression
-            
-            cleaned_query, (start_timestamp, end_timestamp) = extract_time_expression(query)
-            
-            if start_timestamp is None and end_timestamp is None:
-                # No time expression found, try direct parsing
-                start_timestamp, end_timestamp = parse_time_expression(query)
-            
-            # Measure query time
-            query_start = time.time()
-            
-            # Use recall method with time filtering
-            semantic_query = cleaned_query.strip() if cleaned_query.strip() else None
-            results = await storage.recall(
-                query=semantic_query,
-                n_results=n_results,
-                start_timestamp=start_timestamp,
-                end_timestamp=end_timestamp
-            )
-            
-            query_time_ms = (time.time() - query_start) * 1000
-            # Record the query time for averaging
-            self.record_query_time(query_time_ms)
-            
-            memories = []
-            for result in results:
-                memory_dict = {
-                    "content": result.memory.content,
-                    "content_hash": result.memory.content_hash,
-                    "id": result.memory.content_hash,  # Add ID for delete buttons
-                    "tags": result.memory.tags,
-                    "type": result.memory.memory_type,
-                    "timestamp": result.memory.created_at_iso if hasattr(result.memory, 'created_at_iso') else None,
-                    "metadata": {
-                        "timestamp": result.memory.created_at_iso if hasattr(result.memory, 'created_at_iso') else None
-                    }
-                }
-                
-                # Add relevance score if available
-                if hasattr(result, 'relevance_score') and result.relevance_score is not None:
-                    memory_dict["relevance_score"] = result.relevance_score
-                    memory_dict["similarity"] = result.relevance_score
-                
-                memories.append(memory_dict)
-            
-            response = {"memories": memories}
-            total_time_ms = (time.time() - start_time) * 1000
-            logger.info(f"Dashboard recall completed in {total_time_ms:.2f}ms (query: {query_time_ms:.2f}ms)")
-            return [types.TextContent(type="text", text=json.dumps(response))]
-            
-        except Exception as e:
-            logger.error(f"Error in dashboard_recall_memory: {str(e)}")
-            logger.error(traceback.format_exc())
-            result = {"error": str(e), "memories": []}
-            return [types.TextContent(type="text", text=json.dumps(result))]
-
-    async def handle_dashboard_retrieve_memory(self, arguments: dict) -> List[types.TextContent]:
-        """Dashboard version of retrieve_memory that returns JSON."""
-        logger.info("=== EXECUTING DASHBOARD_RETRIEVE_MEMORY ===")
-        start_time = time.time()
-        try:
-            query = arguments.get("query")
-            n_results = arguments.get("n_results", 5)
-            
-            if not query:
-                result = {"error": "Query is required", "memories": []}
-                return [types.TextContent(type="text", text=json.dumps(result))]
-            
-            # Initialize storage lazily when needed
-            storage = await self._ensure_storage_initialized()
-            
-            # Measure query time
-            query_start = time.time()
-            results = await storage.retrieve(query, n_results)
-            query_time_ms = (time.time() - query_start) * 1000
-            
-            # Record the query time for averaging
-            self.record_query_time(query_time_ms)
-            
-            memories = []
-            for result in results:
-                memory_dict = {
-                    "content": result.memory.content,
-                    "content_hash": result.memory.content_hash,
-                    "id": result.memory.content_hash,  # Add ID for delete buttons
-                    "relevance_score": result.relevance_score,
-                    "similarity": result.relevance_score,  # Alias for frontend compatibility
-                    "tags": result.memory.tags,
-                    "type": result.memory.memory_type,
-                    "timestamp": result.memory.created_at_iso if hasattr(result.memory, 'created_at_iso') else None,
-                    "metadata": {
-                        "timestamp": result.memory.created_at_iso if hasattr(result.memory, 'created_at_iso') else None
-                    }
-                }
-                memories.append(memory_dict)
-            
-            response = {"memories": memories}
-            total_time_ms = (time.time() - start_time) * 1000
-            logger.info(f"Dashboard retrieve completed in {total_time_ms:.2f}ms (query: {query_time_ms:.2f}ms)")
-            return [types.TextContent(type="text", text=json.dumps(response))]
-            
-        except Exception as e:
-            logger.error(f"Error in dashboard_retrieve_memory: {str(e)}")
-            result = {"error": str(e), "memories": []}
-            return [types.TextContent(type="text", text=json.dumps(result))]
-
-    async def handle_dashboard_search_by_tag(self, arguments: dict) -> List[types.TextContent]:
-        """Dashboard version of search_by_tag that returns JSON."""
-        logger.info("=== EXECUTING DASHBOARD_SEARCH_BY_TAG ===")
-        start_time = time.time()
-        try:
-            tags = arguments.get("tags", [])
-            
-            if not tags:
-                result = {"error": "Tags are required", "memories": []}
-                return [types.TextContent(type="text", text=json.dumps(result))]
-            
-            # Initialize storage lazily when needed
-            storage = await self._ensure_storage_initialized()
-            
-            # Measure query time
-            query_start = time.time()
-            memories = await storage.search_by_tag(tags)
-            query_time_ms = (time.time() - query_start) * 1000
-            
-            # Record the query time for averaging
-            self.record_query_time(query_time_ms)
-            
-            memories_list = []
-            for memory in memories:
-                memory_dict = {
-                    "content": memory.content,
-                    "content_hash": memory.content_hash,
-                    "id": memory.content_hash,  # Add ID for delete buttons
-                    "tags": memory.tags,
-                    "type": memory.memory_type,
-                    "timestamp": memory.created_at_iso if hasattr(memory, 'created_at_iso') else None,
-                    "metadata": {
-                        "timestamp": memory.created_at_iso if hasattr(memory, 'created_at_iso') else None
-                    }
-                }
-                memories_list.append(memory_dict)
-            
-            response = {"memories": memories_list}
-            total_time_ms = (time.time() - start_time) * 1000
-            logger.info(f"Dashboard search by tag completed in {total_time_ms:.2f}ms (query: {query_time_ms:.2f}ms)")
-            return [types.TextContent(type="text", text=json.dumps(response))]
-            
-        except Exception as e:
-            logger.error(f"Error in dashboard_search_by_tag: {str(e)}")
-            result = {"error": str(e), "memories": []}
-            return [types.TextContent(type="text", text=json.dumps(result))]
-
-    async def handle_dashboard_get_stats(self, arguments: dict) -> List[types.TextContent]:
-        """Dashboard version that returns database statistics as JSON."""
-        logger.info("=== EXECUTING DASHBOARD_GET_STATS ===")
-        try:
-            # Get real stats by initializing ChromaDB (now that we know it works)
-            import os
-            
-            # Check if ChromaDB directory exists and get basic info
-            chroma_exists = os.path.exists(CHROMA_PATH)
-            chroma_size = "unknown"
-            total_memories = 0
-            unique_tags = 0
-            last_updated = "unknown"
-            
-            if chroma_exists:
-                try:
-                    total_size = 0
-                    for dirpath, dirnames, filenames in os.walk(CHROMA_PATH):
-                        for filename in filenames:
-                            filepath = os.path.join(dirpath, filename)
-                            if os.path.exists(filepath):
-                                total_size += os.path.getsize(filepath)
-                    chroma_size = f"{total_size / (1024*1024):.2f} MB"
-                except:
-                    chroma_size = "calculation_failed"
-                
-                # Get real stats by initializing ChromaDB
-                try:
-                    logger.info("Initializing storage to get real stats...")
-                    storage = await self._ensure_storage_initialized()
-                    
-                    # Get database statistics using the utility function
-                    from .utils.db_utils import get_database_stats
-                    stats = get_database_stats(storage)
-                    
-                    # Extract stats from the nested structure
-                    collection_stats = stats.get("collection", {})
-                    total_memories = collection_stats.get("total_memories", 0)
-                    
-                    # Calculate unique tags by getting all memories and counting unique tags
-                    try:
-                        # Get all memories to count unique tags
-                        all_data = storage.collection.get()
-                        if all_data and all_data.get("metadatas"):
-                            all_tags = set()
-                            for metadata in all_data["metadatas"]:
-                                if metadata and isinstance(metadata, dict):
-                                    tags = metadata.get("tags", [])
-                                    if isinstance(tags, list):
-                                        all_tags.update(tags)
-                                    elif isinstance(tags, str):
-                                        # Handle comma-separated string tags
-                                        tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
-                                        all_tags.update(tag_list)
-                            unique_tags = len(all_tags)
-                        else:
-                            unique_tags = 0
-                    except Exception as tag_error:
-                        logger.warning(f"Could not count unique tags: {str(tag_error)}")
-                        unique_tags = 0
-                    
-                    last_updated = "recently" if total_memories > 0 else "unknown"
-                    
-                    logger.info(f"Retrieved real stats: {total_memories} memories, {unique_tags} unique tags")
-                    
-                except Exception as e:
-                    logger.warning(f"Could not get detailed stats: {str(e)}")
-                    # If stats fail but search works, try a simple count via storage
-                    try:
-                        if hasattr(self, 'storage') and self.storage and self._storage_initialized:
-                            # Try to get basic count from initialized storage
-                            collection = self.storage.collection
-                            if collection:
-                                count_result = collection.count()
-                                total_memories = count_result if isinstance(count_result, int) else 0
-                                logger.info(f"Got basic count from collection: {total_memories}")
-                    except Exception as e2:
-                        logger.warning(f"Basic count also failed: {str(e2)}")
-            
-            # Format for dashboard with proper numeric types
-            result = {
-                "total_memories": total_memories,  # Always a number
-                "unique_tags": unique_tags,        # Always a number
-                "database_size": chroma_size,
-                "database_path": CHROMA_PATH,
-                "database_exists": chroma_exists,
-                "last_updated": last_updated,
-                "note": "Stats loaded successfully" if total_memories > 0 else "Database exists but appears empty"
-            }
-            
-            logger.info(f"Returning stats: {result}")
-            return [types.TextContent(type="text", text=json.dumps(result))]
-            
-        except Exception as e:
-            logger.error(f"Error in dashboard_get_stats: {str(e)}")
-            result = {"error": str(e), "total_memories": 0, "unique_tags": 0}
-            return [types.TextContent(type="text", text=json.dumps(result))]
-
-    async def handle_dashboard_optimize_db(self, arguments: dict) -> List[types.TextContent]:
-        """Dashboard version that optimizes database and returns JSON with progress tracking."""
-        logger.info("=== EXECUTING DASHBOARD_OPTIMIZE_DB ===")
-        try:
-            # Generate operation ID for progress tracking
-            import uuid
-            operation_id = f"optimize_db_{uuid.uuid4().hex[:8]}"
-            
-            # Send progress notifications
-            await self.send_progress_notification(operation_id, 0, "Starting database optimization...")
-            await self.send_progress_notification(operation_id, 20, "Analyzing database structure...")
-            
-            # For dashboard optimization, return success without requiring ChromaDB initialization
-            # This prevents timeout issues while still providing meaningful feedback
-            await self.send_progress_notification(operation_id, 40, "Cleaning up duplicate entries...")
-            await asyncio.sleep(0.1)  # Small delay to simulate work
-            
-            await self.send_progress_notification(operation_id, 60, "Optimizing vector indices...")
-            await asyncio.sleep(0.1)
-            
-            await self.send_progress_notification(operation_id, 80, "Compacting storage...")
-            await asyncio.sleep(0.1)
-            
-            result = {
-                "status": "completed",
-                "message": "Database optimization completed successfully",
-                "operations_performed": [
-                    "Cleaned up duplicate entries",
-                    "Optimized vector indices", 
-                    "Compacted storage"
-                ],
-                "operation_id": operation_id,
-                "note": "Basic optimization completed. For advanced operations, use full memory tools."
-            }
-            
-            await self.send_progress_notification(operation_id, 100, "Database optimization completed successfully")
-            
-            return [types.TextContent(type="text", text=json.dumps(result))]
-            
-        except Exception as e:
-            logger.error(f"Error in dashboard_optimize_db: {str(e)}")
-            result = {"status": "error", "message": str(e)}
-            return [types.TextContent(type="text", text=json.dumps(result))]
-
-    async def handle_dashboard_create_backup(self, arguments: dict) -> List[types.TextContent]:
-        """Dashboard version that creates backup and returns JSON."""
-        logger.info("=== EXECUTING DASHBOARD_CREATE_BACKUP ===")
-        try:
-            import shutil
-            import os
-            import json
-            from datetime import datetime
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"memory_backup_{timestamp}"
-            backup_path = os.path.join(BACKUPS_PATH, backup_name)
-            
-            # Create backup directory
-            os.makedirs(backup_path, exist_ok=True)
-            
-            files_copied = 0
-            backend_info = {}
-            
-            # Handle SQLite-vec backend
-            if STORAGE_BACKEND == 'sqlite_vec':
-                from ..config import SQLITE_VEC_PATH
-                sqlite_path = SQLITE_VEC_PATH
-                if os.path.exists(sqlite_path):
-                    # Copy SQLite database files
-                    shutil.copy2(sqlite_path, backup_path)
-                    files_copied += 1
-                    
-                    # Copy WAL and SHM files if they exist
-                    for ext in ['-wal', '-shm']:
-                        ext_file = sqlite_path + ext
-                        if os.path.exists(ext_file):
-                            shutil.copy2(ext_file, backup_path)
-                            files_copied += 1
-                    
-                    backend_info = {
-                        "backend": "sqlite_vec",
-                        "source_path": sqlite_path,
-                        "database_size": os.path.getsize(sqlite_path)
-                    }
-                else:
-                    logger.warning(f"SQLite database not found at {sqlite_path}")
-            
-            # Handle ChromaDB backend (fallback/legacy)
-            if STORAGE_BACKEND == 'chroma' or (files_copied == 0 and os.path.exists(CHROMA_PATH)):
-                if os.path.exists(CHROMA_PATH):
-                    shutil.copytree(CHROMA_PATH, os.path.join(backup_path, "chroma_db"), dirs_exist_ok=True)
-                    
-                    # Count files copied
-                    for root, dirs, files in os.walk(os.path.join(backup_path, "chroma_db")):
-                        files_copied += len(files)
-                    
-                    backend_info = {
-                        "backend": "chroma",
-                        "source_path": CHROMA_PATH
-                    }
-            
-            # Create backup metadata
-            backup_metadata = {
-                "backup_name": backup_name,
-                "timestamp": timestamp,
-                "created_at": datetime.now().isoformat(),
-                "storage_backend": STORAGE_BACKEND,
-                "files_copied": files_copied,
-                "backup_path": backup_path,
-                **backend_info
-            }
-            
-            with open(os.path.join(backup_path, "backup_info.json"), "w") as f:
-                json.dump(backup_metadata, f, indent=2)
-            
-            if files_copied > 0:
-                result = {
-                    "status": "completed",
-                    "message": f"Backup created successfully: {backup_name}",
-                    "backup_path": backup_path,
-                    "timestamp": timestamp,
-                    "files_copied": files_copied,
-                    "backend": STORAGE_BACKEND,
-                    **backend_info
-                }
-            else:
-                result = {
-                    "status": "completed",
-                    "message": f"Backup created (empty): {backup_name}",
-                    "backup_path": backup_path,
-                    "timestamp": timestamp,
-                    "files_copied": 0,
-                    "backend": STORAGE_BACKEND,
-                    "note": "No database files found - backup is empty but ready for future data"
-                }
-            
-            return [types.TextContent(type="text", text=json.dumps(result))]
-            
-        except Exception as e:
-            logger.error(f"Error in dashboard_create_backup: {str(e)}")
-            result = {"status": "error", "message": str(e)}
-            return [types.TextContent(type="text", text=json.dumps(result))]
-
-    async def handle_dashboard_delete_memory(self, arguments: dict) -> List[types.TextContent]:
-        """Dashboard version of delete_memory that returns JSON."""
-        logger.info("=== EXECUTING DASHBOARD_DELETE_MEMORY ===")
-        try:
-            memory_id = arguments.get("memory_id")
-            
-            if not memory_id:
-                result = {"status": "error", "message": "Memory ID is required"}
-                return [types.TextContent(type="text", text=json.dumps(result))]
-            
-            # Initialize storage lazily when needed
-            storage = await self._ensure_storage_initialized()
-            
-            # The memory_id should be the content_hash
-            success, message = await storage.delete(memory_id)
-            
-            if success:
-                result = {
-                    "status": "success", 
-                    "message": message,
-                    "deleted_id": memory_id
-                }
-            else:
-                result = {
-                    "status": "error",
-                    "message": message
-                }
-            
-            logger.info(f"Delete memory result: {result}")
-            return [types.TextContent(type="text", text=json.dumps(result))]
-            
-        except Exception as e:
-            logger.error(f"Error in dashboard_delete_memory: {str(e)}")
-            result = {"status": "error", "message": str(e)}
-            return [types.TextContent(type="text", text=json.dumps(result))]
-
     async def handle_store_memory(self, arguments: dict) -> List[types.TextContent]:
         content = arguments.get("content")
         metadata = arguments.get("metadata", {})
-        
+
         if not content:
             return [types.TextContent(type="text", text="Error: Content is required")]
-        
-        try:
-            # Initialize storage lazily when needed
-            storage = await self._ensure_storage_initialized()
-            
-            # Normalize tags to a list
-            tags = metadata.get("tags", "")
-            if isinstance(tags, str):
-                tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
-            elif isinstance(tags, list):
-                tags = [str(tag).strip() for tag in tags if str(tag).strip()]
-            else:
-                tags = []  # If tags is neither string nor list, default to empty list
 
-            sanitized_tags = storage.sanitized(tags)
-            
-            # Add optional hostname tracking
-            final_metadata = metadata.copy()
-            if INCLUDE_HOSTNAME:
-                # Prioritize client-provided hostname, then fallback to server
-                client_hostname = arguments.get("client_hostname")
-                if client_hostname:
-                    hostname = client_hostname
-                else:
-                    hostname = socket.gethostname()
-                    
-                source_tag = f"source:{hostname}"
-                if source_tag not in tags:
-                    tags.append(source_tag)
-                final_metadata["hostname"] = hostname
-            
-            # Create memory object
-            content_hash = generate_content_hash(content, final_metadata)
-            now = time.time()
-            memory = Memory(
+        try:
+            # Initialize storage lazily when needed (also initializes memory_service)
+            await self._ensure_storage_initialized()
+
+            # Extract parameters for MemoryService call
+            tags = metadata.get("tags", "")
+            memory_type = metadata.get("type", "note")  # HTTP server uses metadata.type
+            client_hostname = arguments.get("client_hostname")
+
+            # Call shared MemoryService business logic
+            result = await self.memory_service.store_memory(
                 content=content,
-                content_hash=content_hash,
-                tags=tags,  # keep as a list for easier use in other methods
-                memory_type=final_metadata.get("type"),
-                metadata = {**final_metadata, "tags":sanitized_tags},  # include the stringified tags in the meta data
-                created_at=now,
-                created_at_iso=datetime.utcfromtimestamp(now).isoformat() + "Z"
+                tags=tags,
+                memory_type=memory_type,
+                metadata=metadata,
+                client_hostname=client_hostname
             )
-            
-            # Store memory
-            success, message = await storage.store(memory)
-            return [types.TextContent(type="text", text=message)]
+
+            # Convert MemoryService result to HTTP response format
+            return [types.TextContent(type="text", text=result["message"])]
+
         except Exception as e:
             logger.error(f"Error storing memory: {str(e)}\n{traceback.format_exc()}")
             return [types.TextContent(type="text", text=f"Error storing memory: {str(e)}")]
@@ -2591,30 +2129,52 @@ class MemoryServer:
             return [types.TextContent(type="text", text="Error: Query is required")]
         
         try:
-            # Initialize storage lazily when needed
-            storage = await self._ensure_storage_initialized()
-            
+            # Initialize storage lazily when needed (also initializes memory_service)
+            await self._ensure_storage_initialized()
+
             # Track performance
             start_time = time.time()
-            results = await storage.retrieve(query, n_results)
+
+            # Call shared MemoryService business logic
+            result = await self.memory_service.retrieve_memory(
+                query=query,
+                n_results=n_results
+            )
+
             query_time_ms = (time.time() - start_time) * 1000
             
             # Record query time for performance monitoring
             self.record_query_time(query_time_ms)
-            
-            if not results:
+
+            if result.get("error"):
+                return [types.TextContent(type="text", text=f"Error retrieving memories: {result['error']}")]
+
+            memories = result.get("memories", [])
+            if not memories:
                 return [types.TextContent(type="text", text="No matching memories found")]
-            
+
+            # Format results in HTTP server style (different from MCP server)
             formatted_results = []
-            for i, result in enumerate(results):
-                memory_info = [
-                    f"Memory {i+1}:",
-                    f"Content: {result.memory.content}",
-                    f"Hash: {result.memory.content_hash}",
-                    f"Relevance Score: {result.relevance_score:.2f}"
-                ]
-                if result.memory.tags:
-                    memory_info.append(f"Tags: {', '.join(result.memory.tags)}")
+            for i, memory in enumerate(memories):
+                memory_info = [f"Memory {i+1}:"]
+                # HTTP server uses created_at instead of timestamp
+                created_at = memory.get("created_at")
+                if created_at:
+                    # Parse ISO string and format
+                    try:
+                        dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        memory_info.append(f"Timestamp: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                    except (ValueError, TypeError):
+                        memory_info.append(f"Timestamp: {created_at}")
+
+                memory_info.extend([
+                    f"Content: {memory['content']}",
+                    f"Hash: {memory['content_hash']}",
+                    f"Relevance Score: {memory['similarity_score']:.2f}"
+                ])
+                tags = memory.get("tags", [])
+                if tags:
+                    memory_info.append(f"Tags: {', '.join(tags)}")
                 memory_info.append("---")
                 formatted_results.append("\n".join(memory_info))
             
@@ -2633,11 +2193,16 @@ class MemoryServer:
             return [types.TextContent(type="text", text="Error: Tags are required")]
         
         try:
-            # Initialize storage lazily when needed
-            storage = await self._ensure_storage_initialized()
-            
-            memories = await storage.search_by_tag(tags)
-            
+            # Initialize storage lazily when needed (also initializes memory_service)
+            await self._ensure_storage_initialized()
+
+            # Call shared MemoryService business logic
+            result = await self.memory_service.search_by_tag(tags=tags)
+
+            if result.get("error"):
+                return [types.TextContent(type="text", text=f"Error searching by tags: {result['error']}")]
+
+            memories = result.get("memories", [])
             if not memories:
                 return [types.TextContent(
                     type="text",
@@ -2646,14 +2211,23 @@ class MemoryServer:
             
             formatted_results = []
             for i, memory in enumerate(memories):
-                memory_info = [
-                    f"Memory {i+1}:",
-                    f"Content: {memory.content}",
-                    f"Hash: {memory.content_hash}",
-                    f"Tags: {', '.join(memory.tags)}"
-                ]
-                if memory.memory_type:
-                    memory_info.append(f"Type: {memory.memory_type}")
+                memory_info = [f"Memory {i+1}:"]
+                created_at = memory.get("created_at")
+                if created_at:
+                    try:
+                        dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        memory_info.append(f"Timestamp: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                    except (ValueError, TypeError):
+                        memory_info.append(f"Timestamp: {created_at}")
+
+                memory_info.extend([
+                    f"Content: {memory['content']}",
+                    f"Hash: {memory['content_hash']}",
+                    f"Tags: {', '.join(memory.get('tags', []))}"
+                ])
+                memory_type = memory.get("memory_type")
+                if memory_type:
+                    memory_info.append(f"Type: {memory_type}")
                 memory_info.append("---")
                 formatted_results.append("\n".join(memory_info))
             
@@ -2669,10 +2243,13 @@ class MemoryServer:
         content_hash = arguments.get("content_hash")
         
         try:
-            # Initialize storage lazily when needed
-            storage = await self._ensure_storage_initialized()
-            success, message = await storage.delete(content_hash)
-            return [types.TextContent(type="text", text=message)]
+            # Initialize storage lazily when needed (also initializes memory_service)
+            await self._ensure_storage_initialized()
+
+            # Call shared MemoryService business logic
+            result = await self.memory_service.delete_memory(content_hash)
+
+            return [types.TextContent(type="text", text=result["message"])]
         except Exception as e:
             logger.error(f"Error deleting memory: {str(e)}\n{traceback.format_exc()}")
             return [types.TextContent(type="text", text=f"Error deleting memory: {str(e)}")]
@@ -3081,38 +2658,6 @@ Memories Archived: {report.memories_archived}"""
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
             return [types.TextContent(type="text", text=error_msg)]
 
-    async def handle_get_embedding(self, arguments: dict) -> List[types.TextContent]:
-        content = arguments.get("content")
-        if not content:
-            return [types.TextContent(type="text", text="Error: Content is required")]
-        
-        try:
-            # Initialize storage lazily when needed
-            storage = await self._ensure_storage_initialized()
-            
-            from .utils.debug import get_raw_embedding
-            result = get_raw_embedding(storage, content)
-            return [types.TextContent(
-                type="text",
-                text=f"Embedding results:\n{json.dumps(result, indent=2)}"
-            )]
-        except Exception as e:
-            return [types.TextContent(type="text", text=f"Error getting embedding: {str(e)}")]
-
-    async def handle_check_embedding_model(self, arguments: dict) -> List[types.TextContent]:
-        try:
-            # Initialize storage lazily when needed
-            storage = await self._ensure_storage_initialized()
-            
-            from .utils.debug import check_embedding_model
-            result = check_embedding_model(storage)
-            return [types.TextContent(
-                type="text",
-                text=f"Embedding model status:\n{json.dumps(result, indent=2)}"
-            )]
-        except Exception as e:
-            return [types.TextContent(type="text", text=f"Error checking model: {str(e)}")]
-
     async def handle_debug_retrieve(self, arguments: dict) -> List[types.TextContent]:
         query = arguments.get("query")
         n_results = arguments.get("n_results", 5)
@@ -3142,10 +2687,20 @@ Memories Archived: {report.memories_archived}"""
                     f"Memory {i+1}:",
                     f"Content: {result.memory.content}",
                     f"Hash: {result.memory.content_hash}",
-                    f"Raw Similarity Score: {result.debug_info['raw_similarity']:.4f}",
-                    f"Raw Distance: {result.debug_info['raw_distance']:.4f}",
-                    f"Memory ID: {result.debug_info['memory_id']}"
+                    f"Similarity Score: {result.relevance_score:.4f}"
                 ]
+
+                # Add debug info if available
+                if result.debug_info:
+                    if 'raw_distance' in result.debug_info:
+                        memory_info.append(f"Raw Distance: {result.debug_info['raw_distance']:.4f}")
+                    if 'backend' in result.debug_info:
+                        memory_info.append(f"Backend: {result.debug_info['backend']}")
+                    if 'query' in result.debug_info:
+                        memory_info.append(f"Query: {result.debug_info['query']}")
+                    if 'similarity_threshold' in result.debug_info:
+                        memory_info.append(f"Threshold: {result.debug_info['similarity_threshold']:.2f}")
+
                 if result.memory.tags:
                     memory_info.append(f"Tags: {', '.join(result.memory.tags)}")
                 memory_info.append("---")
@@ -3192,6 +2747,42 @@ Memories Archived: {report.memories_archived}"""
             )]
         except Exception as e:
             return [types.TextContent(type="text", text=f"Error in exact match retrieve: {str(e)}")]
+
+    async def handle_get_raw_embedding(self, arguments: dict) -> List[types.TextContent]:
+        content = arguments.get("content")
+        if not content:
+            return [types.TextContent(type="text", text="Error: Content is required")]
+
+        try:
+            # Initialize storage lazily when needed
+            storage = await self._ensure_storage_initialized()
+
+            from .utils.debug import get_raw_embedding
+            result = await asyncio.to_thread(get_raw_embedding, storage, content)
+
+            if result["status"] == "success":
+                embedding = result["embedding"]
+                dimension = result["dimension"]
+                # Show first 10 and last 10 values for readability
+                if len(embedding) > 20:
+                    embedding_str = f"[{', '.join(f'{x:.6f}' for x in embedding[:10])}, ..., {', '.join(f'{x:.6f}' for x in embedding[-10:])}]"
+                else:
+                    embedding_str = f"[{', '.join(f'{x:.6f}' for x in embedding)}]"
+
+                return [types.TextContent(
+                    type="text",
+                    text=f"Embedding generated successfully:\n"
+                         f"Dimension: {dimension}\n"
+                         f"Vector: {embedding_str}"
+                )]
+            else:
+                return [types.TextContent(
+                    type="text",
+                    text=f"Failed to generate embedding: {result['error']}"
+                )]
+
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error getting raw embedding: {str(e)}")]
 
     async def handle_recall_memory(self, arguments: dict) -> List[types.TextContent]:
         """
@@ -3243,9 +2834,9 @@ Memories Archived: {report.memories_archived}"""
             # If cleaned_query is empty or just whitespace after removing time expressions,
             # we should perform time-based retrieval only
             semantic_query = cleaned_query.strip() if cleaned_query.strip() else None
-            
-            # Use the enhanced recall method from ChromaMemoryStorage that combines
-            # semantic search with time filtering, or just time filtering if no semantic query
+
+            # Use the enhanced recall method that combines semantic search with time filtering,
+            # or just time filtering if no semantic query
             results = await storage.recall(
                 query=semantic_query,
                 n_results=n_results,
@@ -3391,64 +2982,122 @@ Memories Archived: {report.memories_archived}"""
                             "error": str(e),
                             "backend": "sqlite-vec" 
                         }
-            
-            elif hasattr(storage, 'collection'):
-                # Standard ChromaDB validation
-                if storage.collection is None:
-                    is_valid = False
-                    message = "Collection is not initialized"
-                    stats = {
-                        "status": "error",
-                        "error": "Collection is not initialized",
-                        "backend": "chromadb"
-                    }
-                else:
-                    try:
-                        # Count documents
-                        collection_count = storage.collection.count()
-                        
-                        # Get collection metadata
-                        metadata = {}
-                        if hasattr(storage.collection, 'metadata'):
-                            metadata = storage.collection.metadata
-                        
-                        # Get embedding function info
-                        embedding_function = "none"
-                        if hasattr(storage, 'embedding_function') and storage.embedding_function:
-                            embedding_function = storage.embedding_function.__class__.__name__
-                        
-                        # Collect stats
-                        stats = {
-                            "status": "healthy",
-                            "backend": "chromadb",
-                            "total_memories": collection_count,
-                            "embedding_function": embedding_function,
-                            "metadata": metadata
-                        }
-                        
-                        # Check database path and size
-                        if hasattr(storage, 'path'):
-                            db_path = storage.path
-                            if os.path.exists(db_path):
-                                total_size = 0
-                                for dirpath, _, filenames in os.walk(db_path):
-                                    for f in filenames:
-                                        fp = os.path.join(dirpath, f)
-                                        total_size += os.path.getsize(fp)
-                                
-                                stats["database_size_bytes"] = total_size
-                                stats["database_size_mb"] = round(total_size / (1024 * 1024), 2)
-                        
-                        is_valid = True
-                        message = "ChromaDB validation successful"
-                    except Exception as e:
+
+            elif storage_type == "CloudflareStorage":
+                # Cloudflare storage validation
+                try:
+                    # Check if storage is properly initialized
+                    if not hasattr(storage, 'client') or storage.client is None:
                         is_valid = False
-                        message = f"ChromaDB validation error: {str(e)}"
+                        message = "Cloudflare storage client is not initialized"
                         stats = {
                             "status": "error",
-                            "error": str(e),
-                            "backend": "chromadb"
+                            "error": "Cloudflare storage client is not initialized",
+                            "backend": "cloudflare"
                         }
+                    else:
+                        # Get storage stats
+                        storage_stats = await storage.get_stats()
+
+                        # Collect basic health info
+                        stats = {
+                            "status": "healthy",
+                            "backend": "cloudflare",
+                            "total_memories": storage_stats.get("total_memories", 0),
+                            "vectorize_index": storage.vectorize_index,
+                            "d1_database_id": storage.d1_database_id,
+                            "r2_bucket": storage.r2_bucket,
+                            "embedding_model": storage.embedding_model
+                        }
+
+                        # Add additional stats if available
+                        stats.update(storage_stats)
+
+                        is_valid = True
+                        message = "Cloudflare storage validation successful"
+
+                except Exception as e:
+                    is_valid = False
+                    message = f"Cloudflare storage validation error: {str(e)}"
+                    stats = {
+                        "status": "error",
+                        "error": str(e),
+                        "backend": "cloudflare"
+                    }
+
+            elif storage_type == "HybridMemoryStorage":
+                # Hybrid storage validation (SQLite-vec primary + Cloudflare secondary)
+                try:
+                    if not hasattr(storage, 'primary') or storage.primary is None:
+                        is_valid = False
+                        message = "Hybrid storage primary backend is not initialized"
+                        stats = {
+                            "status": "error",
+                            "error": "Hybrid storage primary backend is not initialized",
+                            "backend": "hybrid"
+                        }
+                    else:
+                        primary_storage = storage.primary
+                        # Validate primary storage (SQLite-vec)
+                        if not hasattr(primary_storage, 'conn') or primary_storage.conn is None:
+                            is_valid = False
+                            message = "Hybrid storage: SQLite connection is not initialized"
+                            stats = {
+                                "status": "error",
+                                "error": "SQLite connection is not initialized",
+                                "backend": "hybrid"
+                            }
+                        else:
+                            # Check for required tables
+                            cursor = primary_storage.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='memories'")
+                            if not cursor.fetchone():
+                                is_valid = False
+                                message = "Hybrid storage: SQLite database is missing required tables"
+                                stats = {
+                                    "status": "error",
+                                    "error": "SQLite database is missing required tables",
+                                    "backend": "hybrid"
+                                }
+                            else:
+                                # Count memories
+                                cursor = primary_storage.conn.execute('SELECT COUNT(*) FROM memories')
+                                memory_count = cursor.fetchone()[0]
+
+                                # Check if embedding tables exist
+                                cursor = primary_storage.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='memory_embeddings'")
+                                has_embeddings = cursor.fetchone() is not None
+
+                                # Check secondary (Cloudflare) status
+                                cloudflare_status = "not_configured"
+                                if hasattr(storage, 'secondary') and storage.secondary:
+                                    sync_service = getattr(storage, 'sync_service', None)
+                                    if sync_service and getattr(sync_service, 'is_running', False):
+                                        cloudflare_status = "syncing"
+                                    else:
+                                        cloudflare_status = "configured"
+
+                                # Collect stats
+                                stats = {
+                                    "status": "healthy",
+                                    "backend": "hybrid",
+                                    "total_memories": memory_count,
+                                    "has_embeddings": has_embeddings,
+                                    "database_path": getattr(primary_storage, 'db_path', SQLITE_VEC_PATH),
+                                    "cloudflare_sync": cloudflare_status
+                                }
+
+                                is_valid = True
+                                message = f"Hybrid storage validation successful ({memory_count} memories, Cloudflare: {cloudflare_status})"
+
+                except Exception as e:
+                    is_valid = False
+                    message = f"Hybrid storage validation error: {str(e)}"
+                    stats = {
+                        "status": "error",
+                        "error": str(e),
+                        "backend": "hybrid"
+                    }
+
             else:
                 is_valid = False
                 message = f"Unknown storage type: {storage_type}"
@@ -3643,12 +3292,20 @@ Memories Archived: {report.memories_archived}"""
             logger.info(f"Starting document ingestion: {file_path}")
             start_time = time.time()
             
-            # Get appropriate document loader
-            loader = get_loader_for_file(file_path)
-            if loader is None:
+            # Validate file exists and get appropriate document loader
+            if not file_path.exists():
                 return [types.TextContent(
                     type="text",
-                    text=f"Error: Unsupported file format: {file_path.suffix}"
+                    text=f"Error: File not found: {file_path.resolve()}"
+                )]
+
+            loader = get_loader_for_file(file_path)
+            if loader is None:
+                from .ingestion import SUPPORTED_FORMATS
+                supported_exts = ", ".join(f".{ext}" for ext in SUPPORTED_FORMATS.keys())
+                return [types.TextContent(
+                    type="text",
+                    text=f"Error: Unsupported file format: {file_path.suffix}. Supported formats: {supported_exts}"
                 )]
             
             # Configure loader
@@ -3892,8 +3549,7 @@ async def async_main():
     check_uv_environment()
     
     # Debug logging is now handled by the CLI layer
-    # CHROMA_PATH is now handled by config.py reading from MCP_MEMORY_CHROMA_PATH environment variable
-    
+
     # Print system diagnostics only for LM Studio (avoid JSON parsing errors in Claude Desktop)
     system_info = get_system_info()
     if MCP_CLIENT == 'lm_studio':
@@ -3904,10 +3560,10 @@ async def async_main():
         print(f"Memory: {system_info.memory_gb:.2f} GB", file=sys.stdout, flush=True)
         print(f"Optimal Model: {system_info.get_optimal_model()}", file=sys.stdout, flush=True)
         print(f"Optimal Batch Size: {system_info.get_optimal_batch_size()}", file=sys.stdout, flush=True)
-        print(f"ChromaDB Path: {CHROMA_PATH}", file=sys.stdout, flush=True)
+        print(f"Storage Backend: {STORAGE_BACKEND}", file=sys.stdout, flush=True)
         print("================================================\n", file=sys.stdout, flush=True)
-    
-    logger.info(f"Starting MCP Memory Service with ChromaDB path: {CHROMA_PATH}")
+
+    logger.info(f"Starting MCP Memory Service with storage backend: {STORAGE_BACKEND}")
     
     try:
         # Create server instance with hardware-aware configuration

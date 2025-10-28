@@ -19,7 +19,11 @@ import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, TypedDict
+try:
+    from typing import NotRequired  # Python 3.11+
+except ImportError:
+    from typing_extensions import NotRequired  # Python 3.10
 import os
 import sys
 import socket
@@ -35,102 +39,45 @@ from mcp.types import TextContent
 
 # Import existing memory service components
 from .config import (
-    CHROMA_PATH, COLLECTION_METADATA, STORAGE_BACKEND, 
+    STORAGE_BACKEND,
     CONSOLIDATION_ENABLED, EMBEDDING_MODEL_NAME, INCLUDE_HOSTNAME,
+    SQLITE_VEC_PATH,
     CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_VECTORIZE_INDEX,
     CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_R2_BUCKET, CLOUDFLARE_EMBEDDING_MODEL,
-    CLOUDFLARE_LARGE_CONTENT_THRESHOLD, CLOUDFLARE_MAX_RETRIES, CLOUDFLARE_BASE_DELAY
+    CLOUDFLARE_LARGE_CONTENT_THRESHOLD, CLOUDFLARE_MAX_RETRIES, CLOUDFLARE_BASE_DELAY,
+    HYBRID_SYNC_INTERVAL, HYBRID_BATCH_SIZE, HYBRID_MAX_QUEUE_SIZE,
+    HYBRID_SYNC_ON_STARTUP, HYBRID_FALLBACK_TO_PRIMARY,
+    CONTENT_PRESERVE_BOUNDARIES, CONTENT_SPLIT_OVERLAP, ENABLE_AUTO_SPLIT
 )
 from .storage.base import MemoryStorage
-
-def get_storage_backend():
-    """Dynamically select and import storage backend based on configuration and availability."""
-    backend = STORAGE_BACKEND.lower()
-    
-    if backend == "sqlite-vec" or backend == "sqlite_vec":
-        try:
-            from .storage.sqlite_vec import SqliteVecMemoryStorage
-            return SqliteVecMemoryStorage
-        except ImportError as e:
-            logger.error(f"Failed to import SQLite-vec storage: {e}")
-            raise
-    elif backend == "chroma":
-        try:
-            from .storage.chroma import ChromaStorage
-            return ChromaStorage
-        except ImportError:
-            logger.warning("ChromaDB not available, falling back to SQLite-vec")
-            try:
-                from .storage.sqlite_vec import SqliteVecStorage
-                return SqliteVecStorage
-            except ImportError as e:
-                logger.error(f"Failed to import fallback SQLite-vec storage: {e}")
-                raise
-    elif backend == "cloudflare":
-        try:
-            from .storage.cloudflare import CloudflareStorage
-            return CloudflareStorage
-        except ImportError as e:
-            logger.error(f"Failed to import Cloudflare storage: {e}")
-            raise
-    else:
-        logger.warning(f"Unknown storage backend '{backend}', defaulting to SQLite-vec")
-        try:
-            from .storage.sqlite_vec import SqliteVecMemoryStorage
-            return SqliteVecMemoryStorage
-        except ImportError as e:
-            logger.error(f"Failed to import default SQLite-vec storage: {e}")
-            raise
-from .models.memory import Memory
+from .services.memory_service import MemoryService
 
 # Configure logging
-log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
+logging.basicConfig(level=logging.INFO)  # Default to INFO level
 logger = logging.getLogger(__name__)
-logger.info(f"Logging level set to: {log_level}")
 
 @dataclass
 class MCPServerContext:
     """Application context for the MCP server with all required components."""
     storage: MemoryStorage
+    memory_service: MemoryService
 
 @asynccontextmanager
 async def mcp_server_lifespan(server: FastMCP) -> AsyncIterator[MCPServerContext]:
     """Manage MCP server lifecycle with proper resource initialization and cleanup."""
     logger.info("Initializing MCP Memory Service components...")
-    
-    # Initialize storage backend based on configuration and availability
-    StorageClass = get_storage_backend()
-    
-    if StorageClass.__name__ == "SqliteVecMemoryStorage":
-        storage = StorageClass(
-            db_path=CHROMA_PATH / "memory.db",
-            embedding_manager=None  # Will be set after creation
-        )
-    elif StorageClass.__name__ == "CloudflareStorage":
-        storage = StorageClass(
-            api_token=CLOUDFLARE_API_TOKEN,
-            account_id=CLOUDFLARE_ACCOUNT_ID,
-            vectorize_index=CLOUDFLARE_VECTORIZE_INDEX,
-            d1_database_id=CLOUDFLARE_D1_DATABASE_ID,
-            r2_bucket=CLOUDFLARE_R2_BUCKET,
-            embedding_model=CLOUDFLARE_EMBEDDING_MODEL,
-            large_content_threshold=CLOUDFLARE_LARGE_CONTENT_THRESHOLD,
-            max_retries=CLOUDFLARE_MAX_RETRIES,
-            base_delay=CLOUDFLARE_BASE_DELAY
-        )
-    else:  # ChromaStorage
-        storage = StorageClass(
-            path=str(CHROMA_PATH),
-            collection_name=COLLECTION_METADATA.get("name", "memories")
-        )
-    
-    # Initialize storage backend
-    await storage.initialize()
-    
+
+    # Initialize storage backend using shared factory
+    from .storage.factory import create_storage_instance
+    storage = await create_storage_instance(SQLITE_VEC_PATH)
+
+    # Initialize memory service with shared business logic
+    memory_service = MemoryService(storage)
+
     try:
         yield MCPServerContext(
-            storage=storage
+            storage=storage,
+            memory_service=memory_service
         )
     finally:
         # Cleanup on shutdown
@@ -148,6 +95,30 @@ mcp = FastMCP(
 )
 
 # =============================================================================
+# TYPE DEFINITIONS
+# =============================================================================
+
+class StoreMemorySuccess(TypedDict):
+    """Return type for successful single memory storage."""
+    success: bool
+    message: str
+    content_hash: str
+
+class StoreMemorySplitSuccess(TypedDict):
+    """Return type for successful chunked memory storage."""
+    success: bool
+    message: str
+    chunks_created: int
+    chunk_hashes: List[str]
+
+class StoreMemoryFailure(TypedDict):
+    """Return type for failed memory storage."""
+    success: bool
+    message: str
+    chunks_created: NotRequired[int]
+    chunk_hashes: NotRequired[List[str]]
+
+# =============================================================================
 # CORE MEMORY OPERATIONS
 # =============================================================================
 
@@ -155,51 +126,59 @@ mcp = FastMCP(
 async def store_memory(
     content: str,
     ctx: Context,
-    tags: Optional[List[str]] = None,
+    tags: Union[str, List[str], None] = None,
     memory_type: str = "note",
     metadata: Optional[Dict[str, Any]] = None,
     client_hostname: Optional[str] = None
-) -> Dict[str, Union[bool, str]]:
+) -> Union[StoreMemorySuccess, StoreMemorySplitSuccess, StoreMemoryFailure]:
     """
     Store a new memory with content and optional metadata.
-    
+
+    **IMPORTANT - Content Length Limits:**
+    - Cloudflare backend: 800 characters max (BGE model 512 token limit)
+    - SQLite-vec backend: No limit (local storage)
+    - Hybrid backend: 800 characters max (constrained by Cloudflare sync)
+
+    If content exceeds the backend's limit, it will be automatically split into
+    multiple linked memory chunks with preserved context (50-char overlap).
+    The splitting respects natural boundaries: paragraphs → sentences → words.
+
     Args:
         content: The content to store as memory
-        tags: Optional tags to categorize the memory
+        tags: Optional tags to categorize the memory (accepts array or comma-separated string)
         memory_type: Type of memory (note, decision, task, reference)
         metadata: Additional metadata for the memory
         client_hostname: Client machine hostname for source tracking
-    
+
+    **IMPORTANT - Tag Formats (Both Supported):**
+    The tags parameter accepts BOTH formats:
+    - ✅ Array format: tags=["tag1", "tag2", "tag3"]
+    - ✅ String format: tags="tag1,tag2,tag3"
+
+    Both will be normalized to an array internally.
+
+    **IMPORTANT - Metadata Tag Format:**
+    When providing tags in the metadata parameter, they MUST be an array:
+    - ✅ CORRECT: metadata={"tags": ["tag1", "tag2"], "type": "note"}
+    - ❌ WRONG: metadata={"tags": "tag1,tag2", "type": "note"}
+
     Returns:
-        Dictionary with success status and message
+        Dictionary with:
+        - success: Boolean indicating if storage succeeded
+        - message: Status message
+        - content_hash: Hash of original content (for single memory)
+        - chunks_created: Number of chunks (if content was split)
+        - chunk_hashes: List of content hashes (if content was split)
     """
-    try:
-        from .services.memory_service import MemoryService
-        
-        storage = ctx.request_context.lifespan_context.storage
-        
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.store_memory(
-            content=content,
-            tags=tags,
-            memory_type=memory_type,
-            metadata=metadata,
-            client_hostname=client_hostname
-        )
-        
-        return {
-            "success": result["success"],
-            "message": result["message"],
-            "content_hash": result["content_hash"]
-        }
-        
-    except Exception as e:
-        logger.error(f"Error storing memory: {e}")
-        return {
-            "success": False,
-            "message": f"Failed to store memory: {str(e)}"
-        }
+    # Delegate to shared MemoryService business logic
+    memory_service = ctx.request_context.lifespan_context.memory_service
+    return await memory_service.store_memory(
+        content=content,
+        tags=tags,
+        memory_type=memory_type,
+        metadata=metadata,
+        client_hostname=client_hostname
+    )
 
 @mcp.tool()
 async def retrieve_memory(
@@ -210,54 +189,22 @@ async def retrieve_memory(
 ) -> Dict[str, Any]:
     """
     Retrieve memories based on semantic similarity to a query.
-    
+
     Args:
         query: Search query for semantic similarity
         n_results: Maximum number of results to return
         min_similarity: Minimum similarity score threshold
-    
+
     Returns:
         Dictionary with retrieved memories and metadata
     """
-    try:
-        from .services.memory_service import MemoryService
-        
-        storage = ctx.request_context.lifespan_context.storage
-        
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.retrieve_memory(
-            query=query,
-            n_results=n_results,
-            similarity_threshold=min_similarity if min_similarity > 0 else None
-        )
-        
-        # Convert service result to MCP format
-        memories = []
-        for item in result["results"]:
-            memories.append({
-                "content": item["memory"]["content"],
-                "content_hash": item["memory"]["content_hash"],
-                "tags": item["memory"]["tags"],
-                "memory_type": item["memory"]["memory_type"],
-                "created_at": item["memory"]["created_at"],
-                "similarity_score": item["similarity_score"],
-                "relevance_reason": item["relevance_reason"]
-            })
-        
-        return {
-            "memories": memories,
-            "query": result["query"],
-            "total_results": result["total_found"]
-        }
-        
-    except Exception as e:
-        logger.error(f"Error retrieving memories: {e}")
-        return {
-            "memories": [],
-            "query": query,
-            "error": f"Failed to retrieve memories: {str(e)}"
-        }
+    # Delegate to shared MemoryService business logic
+    memory_service = ctx.request_context.lifespan_context.memory_service
+    return await memory_service.retrieve_memory(
+        query=query,
+        n_results=n_results,
+        min_similarity=min_similarity
+    )
 
 @mcp.tool()
 async def search_by_tag(
@@ -267,65 +214,20 @@ async def search_by_tag(
 ) -> Dict[str, Any]:
     """
     Search memories by tags.
-    
+
     Args:
         tags: Tag or list of tags to search for
         match_all: If True, memory must have ALL tags; if False, ANY tag
-    
+
     Returns:
         Dictionary with matching memories
     """
-    try:
-        from .services.memory_service import MemoryService
-        
-        storage = ctx.request_context.lifespan_context.storage
-        memory_service = MemoryService(storage)
-        
-        # Normalize tags to list
-        if isinstance(tags, str):
-            tags = [tags]
-        
-        # Use shared service for consistent logic
-        result = await memory_service.search_by_tag(
-            tags=tags,
-            match_all=match_all
-        )
-        
-        # Check for errors from service
-        if "error" in result:
-            return {
-                "memories": [],
-                "search_tags": tags,
-                "match_all": match_all,
-                "error": result["error"]
-            }
-        
-        # Convert service result to MCP format
-        mcp_memories = []
-        for item in result["results"]:
-            mcp_memories.append({
-                "content": item["memory"]["content"],
-                "content_hash": item["memory"]["content_hash"],
-                "tags": item["memory"]["tags"],
-                "memory_type": item["memory"]["memory_type"],
-                "created_at": item["memory"]["created_at"]
-            })
-        
-        return {
-            "memories": mcp_memories,
-            "search_tags": tags,
-            "match_all": match_all,
-            "total_results": result["total_found"]
-        }
-        
-    except Exception as e:
-        logger.error(f"Error searching by tags: {e}")
-        return {
-            "memories": [],
-            "search_tags": tags,
-            "match_all": match_all,
-            "error": f"Failed to search by tags: {str(e)}"
-        }
+    # Delegate to shared MemoryService business logic
+    memory_service = ctx.request_context.lifespan_context.memory_service
+    return await memory_service.search_by_tag(
+        tags=tags,
+        match_all=match_all
+    )
 
 @mcp.tool()
 async def delete_memory(
@@ -334,62 +236,28 @@ async def delete_memory(
 ) -> Dict[str, Union[bool, str]]:
     """
     Delete a specific memory by its content hash.
-    
+
     Args:
         content_hash: Hash of the memory content to delete
-    
+
     Returns:
         Dictionary with success status and message
     """
-    try:
-        from .services.memory_service import MemoryService
-        
-        storage = ctx.request_context.lifespan_context.storage
-        
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.delete_memory(content_hash)
-        
-        return {
-            "success": result["success"],
-            "message": result["message"],
-            "content_hash": result["content_hash"]
-        }
-        
-    except Exception as e:
-        logger.error(f"Error deleting memory: {e}")
-        return {
-            "success": False,
-            "message": f"Failed to delete memory: {str(e)}",
-            "content_hash": content_hash
-        }
+    # Delegate to shared MemoryService business logic
+    memory_service = ctx.request_context.lifespan_context.memory_service
+    return await memory_service.delete_memory(content_hash)
 
 @mcp.tool()
 async def check_database_health(ctx: Context) -> Dict[str, Any]:
     """
     Check the health and status of the memory database.
-    
+
     Returns:
         Dictionary with health status and statistics
     """
-    try:
-        from .services.memory_service import MemoryService
-        
-        storage = ctx.request_context.lifespan_context.storage
-        
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.check_database_health()
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error checking database health: {e}")
-        return {
-            "status": "error",
-            "backend": "unknown",
-            "error": f"Health check failed: {str(e)}"
-        }
+    # Delegate to shared MemoryService business logic
+    memory_service = ctx.request_context.lifespan_context.memory_service
+    return await memory_service.check_database_health()
 
 @mcp.tool()
 async def list_memories(
@@ -411,153 +279,16 @@ async def list_memories(
     Returns:
         Dictionary with memories and pagination info
     """
-    try:
-        from .services.memory_service import MemoryService
-        
-        storage = ctx.request_context.lifespan_context.storage
-        
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.list_memories(
-            page=page,
-            page_size=page_size,
-            tag=tag,
-            memory_type=memory_type
-        )
-        
-        # Format for MCP response
-        return memory_service.format_mcp_response(result)
-        
-    except Exception as e:
-        logger.error(f"Error listing memories: {e}")
-        return {
-            "memories": [],
-            "page": page,
-            "page_size": page_size,
-            "error": f"Failed to list memories: {str(e)}"
-        }
+    # Delegate to shared MemoryService business logic
+    memory_service = ctx.request_context.lifespan_context.memory_service
+    return await memory_service.list_memories(
+        page=page,
+        page_size=page_size,
+        tag=tag,
+        memory_type=memory_type
+    )
 
-@mcp.tool()
-async def search_by_time(
-    query: str,
-    ctx: Context,
-    n_results: int = 10
-) -> Dict[str, Any]:
-    """
-    Search memories by time-based queries using natural language.
-    
-    Args:
-        query: Natural language time query (e.g., 'last week', 'yesterday', 'this month')
-        n_results: Maximum number of memories to return
-    
-    Returns:
-        Dictionary with matching memories
-    """
-    try:
-        from .services.memory_service import MemoryService
-        
-        storage = ctx.request_context.lifespan_context.storage
-        
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.search_by_time(
-            query=query,
-            n_results=n_results
-        )
-        
-        # Check for errors from service
-        if "error" in result:
-            return {
-                "memories": [],
-                "query": query,
-                "error": result["error"]
-            }
-        
-        # Convert service result to MCP format
-        memories = []
-        for item in result["results"]:
-            memories.append({
-                "content": item["memory"]["content"],
-                "content_hash": item["memory"]["content_hash"],
-                "tags": item["memory"]["tags"],
-                "memory_type": item["memory"]["memory_type"],
-                "created_at": item["memory"]["created_at_iso"],
-                "updated_at": item["memory"]["updated_at_iso"]
-            })
-        
-        return {
-            "memories": memories,
-            "query": query,
-            "total_found": result["total_found"]
-        }
-        
-    except Exception as e:
-        logger.error(f"Error searching by time: {e}")
-        return {
-            "memories": [],
-            "query": query,
-            "error": f"Failed to search by time: {str(e)}"
-        }
 
-@mcp.tool()
-async def search_similar(
-    content_hash: str,
-    ctx: Context,
-    limit: int = 5
-) -> Dict[str, Any]:
-    """
-    Search for memories similar to a given memory by content hash.
-    
-    Args:
-        content_hash: Content hash of the memory to find similar ones for
-        limit: Maximum number of similar memories to return
-    
-    Returns:
-        Dictionary with similar memories
-    """
-    try:
-        from .services.memory_service import MemoryService
-        
-        storage = ctx.request_context.lifespan_context.storage
-        
-        # Use shared service for consistent logic
-        memory_service = MemoryService(storage)
-        result = await memory_service.search_similar(
-            content_hash=content_hash,
-            limit=limit
-        )
-        
-        # Check for service-level errors
-        if not result.get("success", True):
-            return {
-                "success": False,
-                "message": result.get("message", "Unknown error occurred")
-            }
-        
-        # Convert service result to MCP format
-        similar_memories = []
-        for item in result["results"]:
-            similar_memories.append({
-                "content": item["memory"]["content"],
-                "content_hash": item["memory"]["content_hash"],
-                "tags": item["memory"]["tags"],
-                "similarity_score": item["similarity_score"],
-                "created_at": item["memory"]["created_at_iso"]
-            })
-        
-        return {
-            "success": True,
-            "target_memory": result["target_memory"],
-            "similar_memories": similar_memories,
-            "total_found": result["total_found"]
-        }
-        
-    except Exception as e:
-        logger.error(f"Error searching similar memories: {e}")
-        return {
-            "success": False,
-            "message": f"Failed to search similar memories: {str(e)}"
-        }
 
 # =============================================================================
 # MAIN ENTRY POINT
@@ -571,7 +302,6 @@ def main():
     
     logger.info(f"Starting MCP Memory Service FastAPI server on {host}:{port}")
     logger.info(f"Storage backend: {STORAGE_BACKEND}")
-    logger.info(f"Data path: {CHROMA_PATH}")
     
     # Run server with streamable HTTP transport
     mcp.run("streamable-http")

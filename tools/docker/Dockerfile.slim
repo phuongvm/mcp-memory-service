@@ -1,6 +1,6 @@
 # Lightweight Docker image optimized for sqlite-vec + ONNX (CPU-only)
 # Eliminates PyTorch and CUDA dependencies for ~90% size reduction
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 # Build arguments for conditional features
 ARG SKIP_MODEL_DOWNLOAD=false
@@ -32,7 +32,7 @@ RUN apt-get update && \
 COPY pyproject.toml .
 COPY uv.lock .
 COPY README.md .
-COPY scripts/install_uv.py .
+COPY scripts/installation/install_uv.py .
 
 # Install UV
 RUN python install_uv.py
@@ -76,6 +76,8 @@ RUN python -m uv pip install \
     "PyPDF2>=3.0.0" \
     "chardet>=5.0.0" \
     "click>=8.0.0" \
+    "cryptography>=41.0.0" \
+    "python-jose[cryptography]>=3.3.0" \
     && python -m uv pip install -e . --no-deps
 
 # Conditionally pre-download ONNX embedding models

@@ -107,6 +107,11 @@
         </div>
         
         <div class="controls">
+            <div style="margin-bottom: 10px;">
+                <label for="tokenInput" style="font-weight: bold;">Authentication Token (optional):</label><br>
+                <input type="text" id="tokenInput" placeholder="Bearer token or API key" style="width: 400px; padding: 8px; margin-top: 5px;">
+                <button class="btn-secondary" onclick="loadTokenFromStorage()">Load from Storage</button>
+            </div>
             <button id="connectBtn" class="btn-primary" onclick="connectSSE()">Connect to Events</button>
             <button id="disconnectBtn" class="btn-secondary" onclick="disconnectSSE()" disabled>Disconnect</button>
             <button class="btn-primary" onclick="testMemoryOperations()">Test Memory Operations</button>
@@ -206,6 +211,45 @@
             }
         }
 
+        function getAuthToken() {
+            // Try token input field first
+            const inputToken = document.getElementById('tokenInput').value.trim();
+            if (inputToken) {
+                return inputToken;
+            }
+            
+            // Check sessionStorage (set by OAuth login page)
+            let token = sessionStorage.getItem('mcp_access_token');
+            if (token) {
+                return token;
+            }
+            
+            // Fallback to localStorage (saved OAuth data)
+            const savedData = localStorage.getItem('mcp_oauth_data');
+            if (savedData) {
+                try {
+                    const oauthData = JSON.parse(savedData);
+                    if (oauthData.accessToken) {
+                        return oauthData.accessToken;
+                    }
+                } catch (e) {
+                    console.error('Failed to parse OAuth data:', e);
+                }
+            }
+            
+            return null;
+        }
+        
+        function loadTokenFromStorage() {
+            const token = getAuthToken();
+            if (token) {
+                document.getElementById('tokenInput').value = token;
+                addLogEntry('✅ Token loaded from storage', 'info');
+            } else {
+                addLogEntry('⚠️ No token found in storage', 'info');
+            }
+        }
+
         function connectSSE() {
             if (eventSource) {
                 eventSource.close();
@@ -213,7 +257,19 @@
             
             addLogEntry('🔌 Connecting to SSE stream...', 'connection');
             
-            eventSource = new EventSource('/api/events');
+            // Get authentication token
+            const token = getAuthToken();
+            
+            // Build SSE URL with token as query parameter if available
+            let sseUrl = '/api/events';
+            if (token) {
+                sseUrl += `?token=${encodeURIComponent(token)}`;
+                addLogEntry('🔑 Using authentication token', 'info');
+            } else {
+                addLogEntry('⚠️ Connecting without authentication (may fail if auth is required)', 'info');
+            }
+            
+            eventSource = new EventSource(sseUrl);
             
             eventSource.onopen = function(event) {
                 updateStatus(true);
@@ -327,6 +383,14 @@
         async function testMemoryOperations() {
             addLogEntry('🚀 Starting test memory operations...', 'info');
             
+            // Get authentication token
+            const token = getAuthToken();
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+                addLogEntry('🔑 Using authentication for API calls', 'info');
+            }
+            
             try {
                 // Store a test memory
                 const testMemory = {
@@ -338,7 +402,7 @@
                 
                 const storeResponse = await fetch('/api/memories', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: headers,
                     body: JSON.stringify(testMemory)
                 });
                 
@@ -350,7 +414,7 @@
                     setTimeout(async () => {
                         const searchResponse = await fetch('/api/search', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: headers,
                             body: JSON.stringify({ query: 'SSE test memory', n_results: 3 })
                         });
                         
@@ -361,7 +425,8 @@
                             setTimeout(async () => {
                                 if (result.content_hash) {
                                     const deleteResponse = await fetch(`/api/memories/${result.content_hash}`, {
-                                        method: 'DELETE'
+                                        method: 'DELETE',
+                                        headers: headers
                                     });
                                     
                                     if (deleteResponse.ok) {
@@ -386,6 +451,12 @@
 
         // Auto-connect on page load
         window.onload = function() {
+            // Try to load token from storage
+            const token = getAuthToken();
+            if (token) {
+                document.getElementById('tokenInput').value = token;
+                addLogEntry('✅ Token auto-loaded from storage', 'info');
+            }
             // connectSSE(); // Uncomment to auto-connect
         };
         

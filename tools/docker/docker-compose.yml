@@ -55,6 +55,10 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app/src
 
+      # Offline mode (uncomment if models are pre-cached and network is restricted)
+      # - HF_HUB_OFFLINE=1
+      # - TRANSFORMERS_OFFLINE=1
+    
     # Use the unified entrypoint
     entrypoint: ["/usr/local/bin/docker-entrypoint-unified.sh"]
 
