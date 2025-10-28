@@ -1,43 +1,125 @@
 # Slim CPU-only deployment using ONNX embeddings (no torch)
+#
 # Usage:
-#   MCP API mode: docker-compose -f docker-compose.slim.yml up -d
+#   Build from source:    docker compose -f docker-compose.slim.yml up -d
+#   Use pre-built image:  Set MEMORY_IMAGE in .env and run above command
+#
+# Features:
+#   - OAuth 2.1 authentication with JWT (RS256)
+#   - API key authentication
+#   - Cloudflare backend support
+#   - mDNS service discovery
+#   - ONNX embeddings (CPU-only, no PyTorch)
+#
+# For full configuration options, see env.template
 
 services:
   mcp-memory-service:
+    # Use pre-built image if MEMORY_IMAGE is set, otherwise build from source
+    image: ${MEMORY_IMAGE:-}
     build:
       context: ../..
       dockerfile: tools/docker/Dockerfile.slim
       args:
-        SKIP_MODEL_DOWNLOAD: "true"   # set to "false" to prefetch ONNX model
+        - SKIP_MODEL_DOWNLOAD=false  # Set to true to skip ONNX model download during build
+    container_name: mcp-memory-service
+    env_file:
+      - ./.env
     ports:
       - "${HTTP_PORT:-8000}:8000"
     volumes:
       - ./data:/app/data
+      - ./data/backups:/app/backups
+      - ./data/sqlite_db:/app/sqlite_db
+
     environment:
-      # HTTP mode
-      - MCP_MODE=http
-      - MCP_HTTP_HOST=${MCP_HTTP_HOST}
+      # Mode selection
+      - MCP_MODE=${MCP_MODE:-http}
+
+      # Storage configuration
+      - MCP_MEMORY_STORAGE_BACKEND=${MCP_MEMORY_STORAGE_BACKEND:-sqlite_vec}
+      - MCP_MEMORY_SQLITE_PATH=${MCP_MEMORY_SQLITE_PATH:-/app/data/sqlite_vec.db}
+      - MCP_MEMORY_BACKUPS_PATH=${MCP_MEMORY_BACKUPS_PATH:-/app/data/backups}
+
+      # Cloudflare configuration (optional - only if using cloudflare backend)
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}
+      - CLOUDFLARE_D1_DATABASE_ID=${CLOUDFLARE_D1_DATABASE_ID}
+      - CLOUDFLARE_VECTORIZE_INDEX=${CLOUDFLARE_VECTORIZE_INDEX}
+      - CLOUDFLARE_R2_BUCKET=${CLOUDFLARE_R2_BUCKET}
+
+      # Embeddings configuration (ONNX for CPU-only)
+      - MCP_MEMORY_USE_ONNX=${MCP_MEMORY_USE_ONNX:-1}
+      - MCP_EMBEDDING_MODEL=${MCP_EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+
+      # HTTP configuration
+      - MCP_HTTP_ENABLED=${MCP_HTTP_ENABLED:-true}
       - MCP_HTTP_PORT=${MCP_HTTP_PORT:-8000}
+      - MCP_HTTP_HOST=${MCP_HTTP_HOST:-0.0.0.0}
+      - MCP_HTTPS_ENABLED=${MCP_HTTPS_ENABLED:-false}
+      - MCP_HTTPS_PORT=${MCP_HTTPS_PORT:-8443}
       - MCP_API_KEY=${MCP_API_KEY:-your-secure-api-key-here}
+      - MCP_CORS_ORIGINS=${MCP_CORS_ORIGINS:-*}
+      - MCP_SSE_HEARTBEAT=${MCP_SSE_HEARTBEAT:-30}
 
-      # Storage configuration: sqlite-vec recommended in slim
-      - MCP_MEMORY_STORAGE_BACKEND=sqlite_vec
-      - MCP_MEMORY_SQLITE_PATH=/app/data/sqlite_vec.db
-      - MCP_MEMORY_BACKUPS_PATH=/app/data/backups
+      # Optional: HTTPS with custom certificates
+      # - MCP_SSL_CERT_FILE=/app/certs/cert.pem
+      # - MCP_SSL_KEY_FILE=/app/certs/key.pem
 
-      # Enable ONNX (no torch) path
-      - MCP_MEMORY_USE_ONNX=1
+      # OAuth 2.1 configuration (optional - for enhanced security)
+      - MCP_OAUTH_ENABLED=${MCP_OAUTH_ENABLED:-false}
+      - MCP_OAUTH_ALLOW_CLIENT_REGISTRATION=${MCP_OAUTH_ALLOW_CLIENT_REGISTRATION:-false}
+      - MCP_OAUTH_ALLOW_AUTHORIZATION=${MCP_OAUTH_ALLOW_AUTHORIZATION:-false}
+      - MCP_OAUTH_PRIVATE_KEY=${MCP_OAUTH_PRIVATE_KEY}
+      - MCP_OAUTH_PUBLIC_KEY=${MCP_OAUTH_PUBLIC_KEY}
+      - MCP_OAUTH_ISSUER=${MCP_OAUTH_ISSUER}
+      - MCP_OAUTH_ACCESS_TOKEN_EXPIRE_MINUTES=${MCP_OAUTH_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      - MCP_OAUTH_AUTHORIZATION_CODE_EXPIRE_MINUTES=${MCP_OAUTH_AUTHORIZATION_CODE_EXPIRE_MINUTES:-10}
 
-      # Logging/perf
+      # Hybrid backend configuration (if using hybrid)
+      - MCP_HYBRID_SYNC_INTERVAL=${MCP_HYBRID_SYNC_INTERVAL:-300}
+      - MCP_HYBRID_BATCH_SIZE=${MCP_HYBRID_BATCH_SIZE:-50}
+      - MCP_HYBRID_SYNC_ON_STARTUP=${MCP_HYBRID_SYNC_ON_STARTUP:-true}
+
+      # mDNS service discovery (optional)
+      - MCP_MDNS_ENABLED=${MCP_MDNS_ENABLED:-true}
+      - MCP_MDNS_SERVICE_NAME=${MCP_MDNS_SERVICE_NAME:-MCP-Memory-Service}
+
+      # Debug mode
+      - MCP_DEBUG=${MCP_DEBUG:-false}
+
+      # Performance tuning
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      # MCP Association configuration
+      - MCP_ASSOCIATIONS_ENABLED=${MCP_ASSOCIATIONS_ENABLED:-true}
+      - MCP_ASSOCIATION_MIN_SIMILARITY=${MCP_ASSOCIATION_MIN_SIMILARITY:-0.3}
+      - MCP_ASSOCIATION_MAX_SIMILARITY=${MCP_ASSOCIATION_MAX_SIMILARITY:-0.7}
+      - MCP_ASSOCIATION_MAX_PAIRS=${MCP_ASSOCIATION_MAX_PAIRS:-100}
+      
+      # Retrieve memory configuration
+      - MCP_SIMILARITY_THRESHOLD=${MCP_SIMILARITY_THRESHOLD:-0.0}
+
+      # Python configuration
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app/src
 
+      # Offline mode (uncomment if models are pre-cached and network is restricted)
+      # - HF_HUB_OFFLINE=1
+      # - TRANSFORMERS_OFFLINE=1
+
     entrypoint: ["/usr/local/bin/docker-entrypoint-unified.sh"]
     restart: unless-stopped
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+
+# Optional: Create a custom network for multi-container setups
+networks:
+  default:
+    name: mcp-network
+    driver: bridge
