@@ -1793,7 +1793,9 @@ SOLUTIONS:
     def _row_to_memory(self, row) -> Optional[Memory]:
         """Convert database row to Memory object."""
         try:
-            content_hash, content, tags_str, memory_type, metadata_str, created_at, updated_at, created_at_iso, updated_at_iso = row
+            # Handle both 9-column (without embedding) and 10-column (with embedding) rows
+            content_hash, content, tags_str, memory_type, metadata_str, created_at, updated_at, created_at_iso, updated_at_iso = row[:9]
+            embedding_blob = row[9] if len(row) > 9 else None
             
             # Parse tags - handle multiple formats found in database
             tags = []
@@ -1818,13 +1820,6 @@ SOLUTIONS:
                     else:
                         # Standard comma-separated format
                         tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()]
-            
-            # Handle both 9-column (without embedding) and 10-column (with embedding) rows
-            content_hash, content, tags_str, memory_type, metadata_str, created_at, updated_at, created_at_iso, updated_at_iso = row[:9]
-            embedding_blob = row[9] if len(row) > 9 else None
-
-            # Parse tags (comma-separated format)
-            tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()] if tags_str else []
 
             # Parse metadata
             metadata = self._safe_json_loads(metadata_str, "get_by_hash")

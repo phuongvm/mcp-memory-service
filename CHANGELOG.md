@@ -8,6 +8,164 @@ For older releases, see [CHANGELOG-HISTORIC.md](./CHANGELOG-HISTORIC.md).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.9.0] - 2025-10-27
+
+### Fixed
+- **Database Lock Prevention** - Resolved "database is locked" errors during concurrent HTTP + MCP server access (Issue discovered during performance troubleshooting)
+  - **Root Cause**: Default `busy_timeout=5000ms` too short for concurrent writes from multiple MCP clients
+  - **Solution**: Applied recommended SQLite pragmas (`busy_timeout=15000,cache_size=20000`)
+  - **WAL Mode**: Already enabled by default, now properly configured for multi-client access
+  - **Impact**: Zero database locks during testing with 5 concurrent write operations
+  - **Documentation**: Updated multi-client architecture docs with pragma recommendations
+
+### Added
+- **Hybrid Backend Installer Support** - Full hybrid backend support in simplified installer (`scripts/installation/install.py`)
+  - **Interactive Selection**: Hybrid now option 4 (recommended default) in installer menu
+  - **Automatic Configuration**: SQLite pragmas set automatically for sqlite_vec and hybrid backends
+  - **Cloudflare Setup**: Interactive credential configuration with connection testing
+  - **Graceful Fallback**: Falls back to sqlite_vec if Cloudflare setup cancelled or fails
+  - **Claude Desktop Integration**: Hybrid backend configuration includes:
+    - SQLite pragmas for concurrent access (`MCP_MEMORY_SQLITE_PRAGMAS`)
+    - Cloudflare credentials for background sync
+    - Proper environment variable propagation
+  - **Benefits**:
+    - 5ms local reads (SQLite-vec)
+    - Zero user-facing latency (background Cloudflare sync)
+    - Multi-device synchronization
+    - Concurrent access support
+
+### Changed
+- **Installer Defaults** - Hybrid backend now recommended for production use
+  - Updated argparse choices to include `hybrid` option
+  - Changed default selection from sqlite_vec to hybrid (option 4)
+  - Enhanced compatibility detection with "recommended" status for hybrid
+  - Improved final installation messages with backend-specific guidance
+- **Environment Management** - Cloudflare credentials now set in current environment immediately
+  - `save_credentials_to_env()` sets both .env file AND os.environ
+  - Ensures credentials available for Claude Desktop config generation
+  - Proper variable propagation for hybrid and cloudflare backends
+- **Path Configuration** - Updated `configure_paths()` to handle all backends
+  - SQLite database paths for: `sqlite_vec`, `hybrid`, `cloudflare`
+  - Cloudflare credentials included when backend requires them
+  - Backward compatible with existing installations
+
+### Technical Details
+- **Files Modified**:
+  - `scripts/installation/install.py`: Lines 655-659 (compatibility), 758 (menu), 784-802 (selection), 970-1017 (hybrid install), 1123-1133 (env config), 1304 (path config), 1381-1401 (Claude Desktop config), 1808-1821 (final messages)
+  - `src/mcp_memory_service/__init__.py`: Line 50 (version bump)
+  - `pyproject.toml`: Line 7 (version bump)
+- **Concurrent Access Testing**: 5/5 simultaneous writes succeeded without locks
+- **HTTP Server Logs**: Confirmed background Cloudflare sync working (line 369: "Successfully stored memory")
+
+## [8.8.2] - 2025-10-26
+
+### Fixed
+- **Document Upload Tag Validation** - Prevents bloated tags from space-separated file paths (Issue #174, PR #179)
+  - **Enhanced Tag Parsing**: Split tags by comma OR space instead of comma only
+  - **Robust file:// URI Handling**: Uses `urllib.parse` for proper URL decoding and path handling
+    - Handles URL-encoded characters (e.g., `%20` for spaces)
+    - Handles different path formats (e.g., `file:///C:/...`)
+    - Properly handles Windows paths with leading slash from urlparse
+  - **File Path Sanitization**: Remove `file://` prefixes, extract filenames only, clean path separators
+  - **Explicit Tag Length Validation**: Tags exceeding 100 chars now raise explicit HTTPException instead of being silently dropped
+
+### Added
+- **Processing Mode Toggle** - UI enhancement for multiple file uploads (PR #179)
+  - **Batch Processing**: All files processed together (faster, default)
+  - **Individual Processing**: Each file processed separately with better error isolation
+  - Toggle only appears when multiple files are selected
+  - Comprehensive help section explaining both modes with pros/cons
+
+### Changed
+- **Code Quality Improvements** - Eliminated code duplication in document upload endpoints (PR #179)
+  - Extracted `parse_and_validate_tags()` helper function to eliminate duplicate tag parsing logic
+  - Removed 44 lines of duplicate code from `upload_document` and `batch_upload_documents`
+  - Extracted magic number (500ms upload delay) to static constant `INDIVIDUAL_UPLOAD_DELAY`
+  - Simplified toggle display logic with ternary operator
+  - Created Issue #180 for remaining medium-priority code quality suggestions
+
+## [8.8.1] - 2025-10-26
+
+### Fixed
+- **Error Handling Improvements** - Enhanced robustness in MemoryService and maintenance scripts (Issue #177)
+  - **MemoryService.store_memory()**: Added specific exception handling for better error classification
+    - `ValueError` → validation errors with "Validation error" messages
+    - `httpx.NetworkError/TimeoutException/HTTPStatusError` → storage errors with "Storage error" messages
+    - Generic `Exception` → unexpected errors with full logging and "unexpected error" messages
+  - **Maintenance Scripts**: Added proper error handling to prevent crashes
+    - `find_cloudflare_duplicates.py`: Wrapped `get_all_memories_bulk()` in try/except, graceful handling of empty results
+    - `delete_orphaned_vectors_fixed.py`: Already used public API (no changes needed)
+
+### Added
+- **Encapsulation Methods** - New public APIs for Cloudflare storage operations (Issue #177)
+  - `CloudflareStorage.delete_vectors_by_ids()` - Batch vector deletion with proper error handling
+  - `CloudflareStorage.get_all_memories_bulk()` - Efficient bulk loading without N+1 tag queries
+  - `CloudflareStorage._row_to_memory()` - Helper for converting D1 rows to Memory objects
+  - **Performance**: Bulk operations avoid expensive individual tag lookups
+  - **Maintainability**: Public APIs instead of direct access to private `_retry_request` method
+
+### Changed
+- **Dependency Management** - Added conditional typing-extensions for Python 3.10 (Issue #177)
+  - Added `"typing-extensions>=4.0.0; python_version < '3.11'"` to pyproject.toml
+  - Ensures `NotRequired` import works correctly on Python 3.10
+  - No impact on Python 3.11+ installations
+
+### Review
+- **Gemini Code Assist**: "This pull request significantly improves the codebase by enhancing error handling and improving encapsulation... well-executed and contribute to better maintainability"
+- **Feedback Addressed**: All review suggestions implemented, including enhanced exception handling
+
+## [8.8.0] - 2025-10-26
+
+### Changed
+- **DRY Refactoring** - Eliminated code duplication between MCP and HTTP servers (PR #176, Issue #172)
+  - **Problem**: MCP (`mcp_server.py`) and HTTP (`server.py`) servers had 364 lines of duplicated business logic
+    - Bug fixes applied to one server were missed in the other (e.g., PR #162 tags validation)
+    - Maintenance burden of keeping two implementations synchronized
+    - Risk of behavioral inconsistencies between protocols
+  - **Solution**:
+    - Created `MemoryService` class (442 lines) as single source of truth for business logic
+    - Refactored `mcp_server.py` to thin adapter (-338 lines, now ~50 lines per method)
+    - Refactored `server.py` to use MemoryService (169 lines modified)
+    - Both servers now delegate to shared business logic
+  - **Benefits**:
+    - **Single source of truth**: All memory operations (store, retrieve, search, delete) in one place
+    - **Consistent behavior**: Both protocols guaranteed identical business logic
+    - **Easier maintenance**: Bug fixes automatically apply to both servers
+    - **Better testability**: Business logic isolated and independently testable
+    - **Prevents future bugs**: Impossible to fix one server and forget the other
+  - **Type Safety**: Added TypedDict classes (`MemoryResult`, `OperationResult`, `HealthStats`) for better type annotations
+  - **Backward Compatibility**: No API changes, both servers remain fully compatible
+  - **Testing**: All tests passing (15/15 Cloudflare storage tests)
+  - **Review**: Gemini Code Assist: "significant and valuable refactoring... greatly improves maintainability and consistency"
+  - **Follow-up**: Minor improvements tracked in Issue #177 (error handling, encapsulation)
+
+### Fixed
+- **Python 3.10 Compatibility** - Added `NotRequired` import fallback (src/mcp_memory_service/mcp_server.py:23-26)
+  - Uses `typing.NotRequired` on Python 3.11+
+  - Falls back to `typing_extensions.NotRequired` on Python 3.10
+  - Ensures compatibility across Python versions
+
+### Added
+- **Maintenance Scripts** - Cloudflare cleanup utilities (from v8.7.1 work)
+  - `scripts/maintenance/find_cloudflare_duplicates.py` - Detect duplicates in Cloudflare D1
+  - `scripts/maintenance/delete_orphaned_vectors_fixed.py` - Clean orphaned Vectorize vectors
+  - `scripts/maintenance/fast_cleanup_duplicates_with_tracking.sh` - Platform-aware SQLite cleanup
+  - `scripts/maintenance/find_all_duplicates.py` - Platform detection (macOS/Linux paths)
+
+## [8.7.1] - 2025-10-26
+
+### Fixed
+- **Cloudflare Vectorize Deletion** - Fixed vector deletion endpoint bug (src/mcp_memory_service/storage/cloudflare.py:671)
+  - **Problem**: Used incorrect endpoint `/delete-by-ids` (hyphens) causing 404 Not Found errors, preventing vector deletion
+  - **Solution**:
+    - Changed to correct Cloudflare API endpoint `/delete_by_ids` (underscores)
+    - Fixed payload format from `[vector_id]` to `{"ids": [vector_id]}`
+    - Created working cleanup script: `scripts/maintenance/delete_orphaned_vectors_fixed.py`
+    - Removed obsolete broken script: `scripts/maintenance/delete_orphaned_vectors.py`
+  - **Impact**: Successfully deleted 646 orphaned vectors from Vectorize in 7 batches
+  - **Testing**: Verified with production data (646 vectors, 100/batch, all mutations successful)
+  - **Discovery**: Found via web research of official Cloudflare Vectorize API documentation
+
 ## [8.7.0] - 2025-10-26
 
 ### Fixed

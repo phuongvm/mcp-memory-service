@@ -277,51 +277,10 @@ async def time_search(
                 status_code=400,
                 detail=result["error"]
             )
-        
-                status_code=400, 
-                detail=f"Could not parse time query: '{request.query}'. Try 'yesterday', 'last week', 'this month', etc."
-            )
-        
-        # Use semantic query if provided for relevance filtering, otherwise get recent memories
-        if request.semantic_query and request.semantic_query.strip():
-            # Semantic filtering: retrieve by similarity
-            search_query = request.semantic_query.strip()
-            query_results = await storage.retrieve(search_query, n_results=_TIME_SEARCH_CANDIDATE_POOL_SIZE)
-        else:
-            # No semantic filter: get recent memories chronologically
-            recent_memories = await storage.get_recent_memories(n=_TIME_SEARCH_CANDIDATE_POOL_SIZE)
-            query_results = [MemoryQueryResult(memory=m, relevance_score=1.0) for m in recent_memories]
 
-        # Filter by time range using list comprehension
-        filtered_memories = [
-            result for result in query_results
-            if result.memory.created_at and is_within_time_range(
-                datetime.fromtimestamp(result.memory.created_at, tz=timezone.utc),
-                time_filter
-            )
-        ]
-
-        # Sort by recency (newest first) - CRITICAL for proper ordering
-        # Handle potential None values with fallback to 0.0
-        filtered_memories.sort(key=lambda r: r.memory.created_at or 0.0, reverse=True)
-
-        # Limit results AFTER sorting
-        filtered_memories = filtered_memories[:request.n_results]
-        
-        # Convert to search results
-        search_results = [
-            memory_query_result_to_search_result(result)
-            for result in filtered_memories
-        ]
-        
-        # Update relevance reason for time-based results
-        for result in search_results:
-            result.relevance_reason = f"Time match: {request.query}"
-        
-        processing_time = (time.time() - start_time) * 1000
-        
+        # Return the result from memory service
         return SearchResponse(
-            results=search_results,
+            results=result["results"],
             total_found=result["total_found"],
             query=result["query"],
             search_type=result["search_type"],

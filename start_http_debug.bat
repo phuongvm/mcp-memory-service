@@ -24,7 +24,7 @@ echo.
 echo Installing dependencies...
 echo This may take a few minutes on first run...
 echo Installing core dependencies...
-uv sync --active
+uv sync
 
 REM Check if installation was successful
 if %errorlevel% neq 0 (
@@ -54,6 +54,7 @@ set MCP_HTTP_PORT=8000
 set MCP_HTTPS_ENABLED=false
 set MCP_MDNS_ENABLED=true
 set MCP_MDNS_SERVICE_NAME=MCP-Memory-Service-Debug
+set MCP_OAUTH_ENABLED=false
 
 REM Fix Transformers cache warning
 set HF_HOME=%USERPROFILE%\.cache\huggingface
@@ -61,7 +62,7 @@ set TRANSFORMERS_CACHE=%USERPROFILE%\.cache\huggingface\transformers
 
 REM Optional: Set API key for security
 REM To use authentication, set your own API key in the environment variable:
-REM set MCP_API_KEY=your-secure-api-key-here
+set MCP_API_KEY=mcp-b83d0f7c5e2ade0554e4ac83db6725c1
 REM Or pass it when running this script: set MCP_API_KEY=mykey && start_http_debug.bat
 if "%MCP_API_KEY%"=="" (
     echo WARNING: No API key set. Running without authentication.
@@ -69,7 +70,7 @@ if "%MCP_API_KEY%"=="" (
 )
 
 REM Optional: Enable debug logging
-set MCP_DEBUG=true
+@REM set MCP_DEBUG=true
 
 echo Configuration:
 echo   Storage Backend: %MCP_MEMORY_STORAGE_BACKEND%

@@ -10,7 +10,7 @@ import logging
 from typing import Dict, List, Any, Optional, Union, TYPE_CHECKING
 from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..dependencies import get_storage
 from ...utils.hashing import generate_content_hash
@@ -39,7 +39,19 @@ class MCPRequest(BaseModel):
 
 
 class MCPResponse(BaseModel):
-    """MCP protocol response structure."""
+    """MCP protocol response structure.
+
+    According to JSON-RPC 2.0 spec:
+    - MUST have either 'result' OR 'error', not both
+    - MUST NOT include both result and error fields
+    - When serializing, we'll exclude None values to ensure compliance
+    """
+    model_config = ConfigDict(
+        # Exclude None values when serializing for JSON-RPC 2.0 compliance
+        use_enum_values=True,
+        exclude_none=True  # This is the key setting
+    )
+
     jsonrpc: str = "2.0"
     id: Optional[Union[str, int]] = None
     result: Optional[Dict[str, Any]] = None
@@ -151,9 +163,22 @@ async def mcp_endpoint(
     """Main MCP protocol endpoint for processing MCP requests."""
     try:
         storage = get_storage()
-        
+
+        # Handle notifications (requests without id) - per JSON-RPC 2.0 spec,
+        # notifications should not receive any response, but streamablehttp transport
+        # requires a valid JSON-RPC message. We return a success response with a sentinel id.
+        if request.id is None:
+            logger.info(f"Received notification: {request.method}")
+            # Return a minimal valid JSON-RPC success response
+            # Use a sentinel id since notifications don't have ids
+            response = MCPResponse(
+                id=-1,  # Sentinel value indicating this was a notification
+                result={"status": "ok"}
+            )
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
         if request.method == "initialize":
-            return MCPResponse(
+            response = MCPResponse(
                 id=request.id,
                 result={
                     "protocolVersion": "2024-11-05",
@@ -166,23 +191,26 @@ async def mcp_endpoint(
                     }
                 }
             )
+            # Return JSONResponse with excluded None values for JSON-RPC 2.0 compliance
+            return JSONResponse(content=response.model_dump(exclude_none=True))
 
         elif request.method == "tools/list":
-            return MCPResponse(
+            response = MCPResponse(
                 id=request.id,
                 result={
-                    "tools": [tool.dict() for tool in MCP_TOOLS]
+                    "tools": [tool.model_dump() for tool in MCP_TOOLS]
                 }
             )
-        
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
         elif request.method == "tools/call":
             tool_name = request.params.get("name") if request.params else None
             arguments = request.params.get("arguments", {}) if request.params else {}
-            
+
             result = await handle_tool_call(storage, tool_name, arguments)
-            
+
             import json
-            return MCPResponse(
+            response = MCPResponse(
                 id=request.id,
                 result={
                     "content": [
@@ -193,25 +221,28 @@ async def mcp_endpoint(
                     ]
                 }
             )
-        
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
         else:
-            return MCPResponse(
+            response = MCPResponse(
                 id=request.id,
                 error={
                     "code": -32601,
                     "message": f"Method not found: {request.method}"
                 }
             )
-            
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
     except Exception as e:
         logger.error(f"MCP endpoint error: {e}")
-        return MCPResponse(
+        response = MCPResponse(
             id=request.id,
             error={
                 "code": -32603,
                 "message": f"Internal error: {str(e)}"
             }
         )
+        return JSONResponse(content=response.model_dump(exclude_none=True))
 
 
 async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -391,7 +422,7 @@ async def list_mcp_tools(
 ):
     """List available MCP tools for discovery."""
     return {
-        "tools": [tool.dict() for tool in MCP_TOOLS],
+        "tools": [tool.model_dump() for tool in MCP_TOOLS],
         "protocol": "mcp",
         "version": "1.0"
     }
