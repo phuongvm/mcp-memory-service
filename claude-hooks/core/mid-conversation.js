@@ -1,6 +1,29 @@
 /**
  * Mid-Conversation Memory Hook
  * Intelligently triggers memory awareness during conversations based on natural language patterns
+ *
+ * WINDOWS SESSIONSTART WORKAROUND:
+ * ================================
+ * This hook includes a workaround for the Windows SessionStart hook bug.
+ *
+ * Issue: SessionStart hooks cause Claude Code to hang indefinitely on Windows due to
+ *        a subprocess lifecycle management bug in the synchronous initialization phase.
+ *
+ * Solution: Enhanced UserPromptSubmit hook that detects the first prompt and automatically
+ *          injects session context, bypassing the need for SessionStart hooks entirely.
+ *
+ * Implementation:
+ * - Constructor initializes `this.isFirstPrompt = true`
+ * - First call to `analyzeMessage()` always returns shouldTrigger=true with confidence=1.0
+ * - Subsequent calls use normal pattern detection logic
+ *
+ * Benefits:
+ * - ✅ Zero Claude Code changes required
+ * - ✅ Works on all platforms (Windows, macOS, Linux)
+ * - ✅ Memory context injected on first user interaction
+ * - ✅ Only ~100ms delay (user types prompt anyway)
+ *
+ * See: WINDOWS-SESSIONSTART-BUG.md for complete technical analysis
  */
 
 const { TieredConversationMonitor } = require('../utilities/tiered-conversation-monitor');
@@ -55,6 +78,10 @@ class MidConversationHook {
         this.lastTriggerTime = 0;
         this.cooldownPeriod = naturalTriggersConfig.cooldownPeriod || 30000; // 30 seconds between triggers
 
+        // WORKAROUND: Track first prompt to inject context on session start
+        // This bypasses the Windows SessionStart hook bug (see WINDOWS-SESSIONSTART-BUG.md)
+        this.isFirstPrompt = true;
+
         // Analytics
         this.analytics = {
             totalAnalyses: 0,
@@ -75,6 +102,29 @@ class MidConversationHook {
 
         try {
             this.analytics.totalAnalyses++;
+
+            // WORKAROUND: On first prompt, always inject context (bypass pattern detection)
+            // This replaces the broken Windows SessionStart hook functionality
+            if (this.isFirstPrompt) {
+                this.isFirstPrompt = false;
+                this.lastTriggerTime = Date.now();
+
+                const performanceResult = this.performanceManager.endTiming(timing);
+                this.analytics.averageLatency = this.updateAverageLatency(performanceResult.latency);
+
+                console.log('[Mid-Conversation Hook] First prompt detected - injecting session context');
+
+                return {
+                    shouldTrigger: true,
+                    confidence: 1.0,
+                    reasoning: 'First prompt - session initialization (Windows SessionStart workaround)',
+                    conversationAnalysis: { topics: [], triggerProbability: 1.0, semanticShift: 0 },
+                    patternResults: { triggerRecommendation: true, confidence: 1.0, matches: [] },
+                    performance: performanceResult,
+                    timestamp: Date.now(),
+                    isFirstPrompt: true
+                };
+            }
 
             // Check cooldown period
             if (Date.now() - this.lastTriggerTime < this.cooldownPeriod) {
@@ -254,6 +304,24 @@ class MidConversationHook {
             limit: this.config.maxMemoriesPerTrigger || 5,
             timeFilter: 'last-month'
         };
+
+        // Handle first-prompt scenario (SessionStart workaround)
+        if (analysisResult.isFirstPrompt) {
+            // For first prompt, retrieve general session context
+            query.semanticQuery = 'recent work project context';
+            query.timeFilter = 'last-week';
+
+            if (context.projectContext) {
+                query.semanticQuery = `${context.projectContext.name} recent work`;
+                query.tags.push(context.projectContext.name);
+
+                if (context.projectContext.language) {
+                    query.tags.push(`language:${context.projectContext.language}`);
+                }
+            }
+
+            return query;
+        }
 
         // Extract key topics from conversation analysis
         if (analysisResult.conversationAnalysis.topics.length > 0) {

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .cursor/hooks/core/agent-start.js",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .cursor/hooks/core/agent-complete.js",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
+

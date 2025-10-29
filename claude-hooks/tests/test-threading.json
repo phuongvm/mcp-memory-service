@@ -2,8 +2,8 @@
   "sessions": [
     {
       "id": "session-1",
-      "startTime": "2025-10-29T10:46:55.089Z",
-      "endTime": "2025-10-29T10:46:55.090Z",
+      "startTime": "2025-10-29T13:01:27.184Z",
+      "endTime": "2025-10-29T13:01:27.184Z",
       "projectContext": {
         "name": "mcp-memory-service",
         "type": "Multi-language Project",
@@ -41,7 +41,7 @@
     },
     {
       "id": "session-2",
-      "startTime": "2025-10-29T10:46:55.090Z",
+      "startTime": "2025-10-29T13:01:27.185Z",
       "endTime": null,
       "projectContext": {
         "name": "mcp-memory-service",
@@ -232,10 +232,18 @@
             "summary": "Implemented auth"
           },
           "timestamp": "2025-10-29T10:46:55.090Z"
+        },
+        {
+          "sessionId": "session-1",
+          "outcome": {
+            "type": "completed",
+            "summary": "Implemented auth"
+          },
+          "timestamp": "2025-10-29T13:01:27.184Z"
         }
       ],
       "status": "active",
-      "lastUpdated": "2025-10-29T10:46:55.090Z"
+      "lastUpdated": "2025-10-29T13:01:27.184Z"
     }
   ],
   "projectSessions": {
@@ -245,8 +253,10 @@
       "session-1",
       "session-2",
       "session-1",
+      "session-2",
+      "session-1",
       "session-2"
     ]
   },
-  "lastSaved": "2025-10-29T10:46:55.090Z"
+  "lastSaved": "2025-10-29T13:01:27.185Z"
 }

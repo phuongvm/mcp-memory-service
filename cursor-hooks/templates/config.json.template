@@ -1,0 +1,84 @@
+{
+  "memoryService": {
+    "protocol": "http",
+    "preferredProtocol": "http",
+    "fallbackEnabled": true,
+    "http": {
+      "endpoint": "https://memory.ptdev.vip",
+      "apiKey": "YOUR_API_KEY_HERE",
+      "healthCheckTimeout": 3000,
+      "useDetailedHealthCheck": true
+    },
+    "mcp": {
+      "serverCommand": ["uv", "run", "memory", "server", "-s", "hybrid"],
+      "serverWorkingDir": null,
+      "connectionTimeout": 5000,
+      "toolCallTimeout": 10000
+    },
+    "defaultTags": ["cursor", "auto-generated"],
+    "maxMemoriesPerSession": 8,
+    "enableSessionConsolidation": true
+  },
+  "projectDetection": {
+    "gitRepository": true,
+    "packageFiles": [
+      "package.json",
+      "pyproject.toml",
+      "Cargo.toml",
+      "go.mod",
+      "pom.xml"
+    ],
+    "frameworkDetection": true,
+    "languageDetection": true,
+    "confidenceThreshold": 0.3
+  },
+  "memoryScoring": {
+    "weights": {
+      "timeDecay": 0.5,
+      "tagRelevance": 0.2,
+      "contentRelevance": 0.15,
+      "contentQuality": 0.2
+    },
+    "minRelevanceScore": 0.4,
+    "timeDecayRate": 0.15
+  },
+  "gitAnalysis": {
+    "enabled": true,
+    "commitLookback": 14,
+    "maxCommits": 20,
+    "includeChangelog": true,
+    "maxGitMemories": 3,
+    "gitContextWeight": 1.8
+  },
+  "contextFormatting": {
+    "includeProjectSummary": true,
+    "includeRelevanceScores": false,
+    "groupByCategory": true,
+    "maxContentLength": 500,
+    "includeTimestamps": true,
+    "truncationMode": "smart"
+  },
+  "sessionAnalysis": {
+    "extractTopics": true,
+    "extractDecisions": true,
+    "extractInsights": true,
+    "extractCodeChanges": true,
+    "extractNextSteps": true,
+    "minSessionLength": 100,
+    "minConfidence": 0.1
+  },
+  "output": {
+    "verbose": true,
+    "showMemoryDetails": true,
+    "showProjectDetails": true,
+    "showScoringDetails": false,
+    "cleanMode": false
+  },
+  "logging": {
+    "level": "info",
+    "enableDebug": false,
+    "logToFile": false,
+    "logFilePath": "~/.cursor/hooks-debug.log"
+  }
+}
+
