@@ -16,15 +16,16 @@ Implements DRY principle by detecting and reusing existing Claude Code MCP confi
 Version: Dynamically synced with main project version
 """
 
-import os
-import sys
-import json
-import shutil
-import platform
 import argparse
+import json
+import os
+import platform
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
 
 # Dynamic version detection from main project
 def get_project_version() -> str:
@@ -296,7 +297,7 @@ class HookInstaller:
 
         # Check if server is connected
         status = detected_config.get('status', '')
-        if '✓ Connected' not in status and 'Connected' not in status:
+        if 'Connected' not in status and '✓ Connected' not in status:
             issues.append(f"Memory server is not connected. Status: {status}")
 
         # Validate command format
@@ -486,11 +487,9 @@ class HookInstaller:
             self.info("No existing hooks installation found - no backup needed")
             return
 
-        timestamp = subprocess.run(['date', '+%Y%m%d-%H%M%S'],
-                                 capture_output=True, text=True).stdout.strip()
-        if not timestamp:  # Fallback for Windows
-            import datetime
-            timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+        # Use datetime for cross-platform compatibility (Windows doesn't have Unix date command)
+        import datetime
+        timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
 
         self.backup_dir = self.claude_hooks_dir.parent / f"hooks-backup-{timestamp}"
 
@@ -573,9 +572,9 @@ class HookInstaller:
                 # Check for jq dependency
                 jq_available = shutil.which('jq') is not None
                 if jq_available:
-                    self.success("✓ jq is installed (required for statusLine)")
+                    self.success("jq is installed (required for statusLine)")
                 else:
-                    self.warn("⚠ jq not found - statusLine requires jq for JSON parsing")
+                    self.warn("jq not found - statusLine requires jq for JSON parsing")
                     self.info("  Install jq:")
                     if self.platform_name == 'darwin':
                         self.info("    macOS: brew install jq")
@@ -916,7 +915,8 @@ class HookInstaller:
         if test_script.exists():
             try:
                 result = subprocess.run(['node', '--check', str(test_script)],
-                                      capture_output=True, text=True, timeout=10)
+                                      capture_output=True, text=True, timeout=10,
+                                      encoding='utf-8', errors='replace')
                 if result.returncode == 0:
                     self.success("Hook JavaScript syntax validation passed")
                 else:
@@ -932,7 +932,8 @@ class HookInstaller:
                 self.info("Running integration tests...")
                 result = subprocess.run(['node', str(integration_test)],
                                       capture_output=True, text=True,
-                                      timeout=30, cwd=str(self.claude_hooks_dir))
+                                      timeout=30, cwd=str(self.claude_hooks_dir),
+                                      encoding='utf-8', errors='replace')
                 if result.returncode == 0:
                     self.success("Integration tests passed")
                 else:
@@ -950,7 +951,8 @@ class HookInstaller:
                     self.info("Running Natural Memory Triggers tests...")
                     result = subprocess.run(['node', str(natural_test)],
                                           capture_output=True, text=True,
-                                          timeout=30, cwd=str(self.claude_hooks_dir))
+                                          timeout=30, cwd=str(self.claude_hooks_dir),
+                                          encoding='utf-8', errors='replace')
                     if result.returncode == 0:
                         self.success("Natural Memory Triggers tests passed")
                     else:
@@ -1139,16 +1141,16 @@ Features:
         is_valid, issues = installer.validate_mcp_prerequisites(detected_mcp)
 
         if is_valid:
-            installer.success("✅ Valid MCP configuration detected!")
-            installer.info("📋 Configuration Options:")
-            installer.info("  [1] Use existing MCP setup (recommended) - DRY principle ✨")
+            installer.success("Valid MCP configuration detected!")
+            installer.info("Configuration Options:")
+            installer.info("  [1] Use existing MCP setup (recommended) - DRY principle")
             installer.info("  [2] Create independent hooks setup - legacy fallback")
 
             # For now, we'll default to using existing MCP (can be made interactive later)
             use_existing_mcp = True
             installer.info("Using existing MCP configuration (option 1)")
         else:
-            installer.warn("⚠️  MCP configuration found but has issues:")
+            installer.warn("MCP configuration found but has issues:")
             for issue in issues:
                 installer.warn(f"    - {issue}")
             installer.info("Will use independent setup as fallback")
@@ -1215,10 +1217,10 @@ Features:
             if install_basic and install_natural_triggers:
                 installer.success("Complete Claude Code memory awareness system installed")
                 installer.info("Features available:")
-                installer.info("  ✅ Session-start and session-end hooks")
-                installer.info("  ✅ Natural Memory Triggers with intelligent pattern detection")
-                installer.info("  ✅ Mid-conversation memory injection")
-                installer.info("  ✅ Performance optimization and CLI management")
+                installer.info("  - Session-start and session-end hooks")
+                installer.info("  - Natural Memory Triggers with intelligent pattern detection")
+                installer.info("  - Mid-conversation memory injection")
+                installer.info("  - Performance optimization and CLI management")
                 installer.info("")
                 installer.info("CLI Management:")
                 installer.info(f"  node {installer.claude_hooks_dir}/memory-mode-controller.js status")

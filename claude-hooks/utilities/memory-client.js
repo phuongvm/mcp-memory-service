@@ -158,27 +158,46 @@ class MemoryClient {
      */
     async _attemptHealthCheck(baseUrl, healthPath) {
         return new Promise((resolve) => {
+            let resolved = false; // Declare outside try block for scope access
+            let timeout; // Declare timeout variable upfront
+            let req; // Declare req outside try block
+            
             try {
-                const url = new URL(healthPath, baseUrl);
+                // baseUrl might be a URL object or string - ensure it's a string for new URL()
+                const baseUrlString = typeof baseUrl === 'string' ? baseUrl : baseUrl.toString();
+                const url = new URL(healthPath, baseUrlString);
 
                 const requestOptions = {
                     hostname: url.hostname,
-                    port: url.port || (url.protocol === 'https:' ? 8443 : 8889),
+                    port: url.port || (url.protocol === 'https:' ? 443 : 8889),
                     path: url.pathname,
                     method: 'GET',
                     headers: {
+                        // Use both headers for maximum compatibility:
+                        // - Authorization Bearer for OAuth-compatible endpoints like /api/health/detailed
+                        // - X-API-Key as fallback for endpoints that prefer it
+                        'Authorization': `Bearer ${this.httpConfig.apiKey}`,
                         'X-API-Key': this.httpConfig.apiKey,
                         'Accept': 'application/json'
                     },
-                    timeout: this.httpConfig.healthCheckTimeout || 3000,
                     rejectUnauthorized: false  // Allow self-signed certificates
                 };
 
                 const protocol = url.protocol === 'https:' ? https : http;
-                const req = protocol.request(requestOptions, (res) => {
+                
+                // Debug: verify request options
+                if (!this.httpConfig.apiKey) {
+                    resolve({ success: false, error: 'API key not configured', fallback: true });
+                    return;
+                }
+                
+                req = protocol.request(requestOptions, (res) => {
                     let data = '';
                     res.on('data', (chunk) => data += chunk);
                     res.on('end', () => {
+                        if (resolved) return;
+                        if (timeout) clearTimeout(timeout);
+                        resolved = true;
                         try {
                             if (res.statusCode === 200) {
                                 const healthData = JSON.parse(data);
@@ -190,21 +209,47 @@ class MemoryClient {
                             resolve({ success: false, error: 'Invalid JSON response', fallback: true });
                         }
                     });
+                    res.on('error', (error) => {
+                        if (resolved) return;
+                        if (timeout) clearTimeout(timeout);
+                        resolved = true;
+                        resolve({ success: false, error: `Response error: ${error.message}`, fallback: true });
+                    });
                 });
 
                 req.on('error', (error) => {
+                    if (resolved) return;
+                    if (timeout) clearTimeout(timeout);
+                    resolved = true;
                     resolve({ success: false, error: error.message, fallback: true });
                 });
-
-                req.on('timeout', () => {
-                    req.destroy();
-                    resolve({ success: false, error: 'Health check timeout', fallback: true });
+                
+                req.on('socket', (socket) => {
+                    socket.on('error', (error) => {
+                        if (resolved) return;
+                        if (timeout) clearTimeout(timeout);
+                        resolved = true;
+                        resolve({ success: false, error: `Socket error: ${error.message}`, fallback: true });
+                    });
                 });
+
+                // Set timeout AFTER request is created
+                timeout = setTimeout(() => {
+                    if (!resolved) {
+                        resolved = true;
+                        if (req) req.destroy();
+                        resolve({ success: false, error: 'Health check timeout', fallback: true });
+                    }
+                }, this.httpConfig.healthCheckTimeout || 3000);
 
                 req.end();
 
             } catch (error) {
-                resolve({ success: false, error: error.message, fallback: true });
+                if (!resolved) {
+                    resolved = true;
+                    if (timeout) clearTimeout(timeout);
+                    resolve({ success: false, error: error.message, fallback: true });
+                }
             }
         });
     }
@@ -247,7 +292,7 @@ class MemoryClient {
 
             const options = {
                 hostname: url.hostname,
-                port: url.port || (url.protocol === 'https:' ? 8443 : 8889),
+                port: url.port || (url.protocol === 'https:' ? 443 : 8889),
                 path: url.pathname,
                 method: 'POST',
                 headers: {

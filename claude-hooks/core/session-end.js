@@ -253,7 +253,7 @@ function storeSessionMemory(endpoint, apiKey, content, projectContext, analysis)
 
         const options = {
             hostname: url.hostname,
-            port: url.port || (isHttps ? 8443 : 8000),
+            port: url.port || (isHttps ? 443 : 8000),
             path: url.pathname,
             method: 'POST',
             headers: {
