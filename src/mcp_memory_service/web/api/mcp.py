@@ -9,7 +9,7 @@ import asyncio
 import logging
 from typing import Dict, List, Any, Optional, Union, TYPE_CHECKING
 from fastapi import APIRouter, HTTPException, Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
 from ..dependencies import get_storage
@@ -165,17 +165,14 @@ async def mcp_endpoint(
         storage = get_storage()
 
         # Handle notifications (requests without id) - per JSON-RPC 2.0 spec,
-        # notifications should not receive any response, but streamablehttp transport
-        # requires a valid JSON-RPC message. We return a success response with a sentinel id.
+        # notifications should not receive any response. However, for StreamableHTTP
+        # transport compatibility, we return HTTP 204 No Content instead of a JSON-RPC response.
+        # This prevents validation errors in clients like Dify that strictly validate JSON-RPC responses.
         if request.id is None:
             logger.info(f"Received notification: {request.method}")
-            # Return a minimal valid JSON-RPC success response
-            # Use a sentinel id since notifications don't have ids
-            response = MCPResponse(
-                id=-1,  # Sentinel value indicating this was a notification
-                result={"status": "ok"}
-            )
-            return JSONResponse(content=response.model_dump(exclude_none=True))
+            # Return HTTP 204 No Content for notifications (per HTTP spec)
+            # This is compliant with JSON-RPC 2.0 which states notifications should not receive responses
+            return Response(status_code=204)
 
         if request.method == "initialize":
             response = MCPResponse(
@@ -235,14 +232,20 @@ async def mcp_endpoint(
 
     except Exception as e:
         logger.error(f"MCP endpoint error: {e}")
-        response = MCPResponse(
-            id=request.id,
-            error={
-                "code": -32603,
-                "message": f"Internal error: {str(e)}"
-            }
-        )
-        return JSONResponse(content=response.model_dump(exclude_none=True))
+        # Only return error response for requests with id (not notifications)
+        if request.id is not None:
+            response = MCPResponse(
+                id=request.id,
+                error={
+                    "code": -32603,
+                    "message": f"Internal error: {str(e)}"
+                }
+            )
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+        else:
+            # For notifications, return 204 No Content even on error
+            # (per JSON-RPC 2.0: notifications should not receive responses)
+            return Response(status_code=204)
 
 
 async def handle_tool_call(storage, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:

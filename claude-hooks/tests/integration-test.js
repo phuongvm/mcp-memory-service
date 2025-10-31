@@ -581,7 +581,7 @@ async function runTests() {
             return new Promise((resolve) => {
                 const options = {
                     hostname: url.hostname,
-                    port: url.port || (url.protocol === 'https:' ? 443 : 8443),
+                    port: url.port || (url.protocol === 'https:' ? 443 : 8889),
                     path: url.pathname,
                     method: 'GET',
                     timeout: 5000,
